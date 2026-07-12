@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.core.errors import AppError
@@ -56,8 +56,30 @@ async def ensure_report_access(
 
 
 @router.get("/dashboard")
-async def inspector_dashboard(gateway: GatewayDep, user: InspectorUserDep) -> dict:
-    inspector = await inspector_record(gateway, user)
+async def inspector_dashboard(
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    inspector_id: UUID | None = Query(default=None),
+) -> dict:
+    if inspector_id is not None:
+        if not user.has_any_role("admin", "operator"):
+            raise AppError(403, "inspector_preview_forbidden", "Only admins can preview inspectors")
+        inspector = await gateway.select(
+            "inspectors",
+            token=user.access_token,
+            filters={"id": str(inspector_id), "status": "active"},
+            single=True,
+        )
+        if not inspector:
+            raise AppError(404, "inspector_not_found", "Active inspector not found")
+    else:
+        inspector = await inspector_record(gateway, user)
+        if not inspector:
+            raise AppError(
+                400,
+                "inspector_preview_required",
+                "Select an inspector to preview the dashboard",
+            )
     token = user.access_token
     assignments = as_list(await gateway.select(
         "inspection_assignments", token=token, filters={"inspector_id": inspector["id"]},
