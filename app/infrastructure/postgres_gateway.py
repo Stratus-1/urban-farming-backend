@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Any
 
 import jwt
@@ -18,6 +19,17 @@ FILTER_OPERATORS = {
     "lt": "<",
     "ilike": "ILIKE",
 }
+
+ISO_DATETIME = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def coerce_filter_value(value: Any) -> Any:
+    """Convert JSON-safe ISO timestamps into values asyncpg can bind to TIMESTAMPTZ."""
+    if isinstance(value, str) and ISO_DATETIME.fullmatch(value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
 
 
 def quote_identifier(value: str) -> str:
@@ -40,7 +52,7 @@ def build_filters(filters: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
             placeholders = []
             for item_index, item in enumerate(values):
                 item_parameter = f"{parameter}_{item_index}"
-                parameters[item_parameter] = item
+                parameters[item_parameter] = coerce_filter_value(item)
                 placeholders.append(f":{item_parameter}")
             clauses.append(f"{field} IN ({', '.join(placeholders)})" if values else "FALSE")
             continue
@@ -56,7 +68,7 @@ def build_filters(filters: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
                 clauses.append(f"{field} IS NULL")
                 continue
         clauses.append(f"{field} {operator} :{parameter}")
-        parameters[parameter] = value
+        parameters[parameter] = coerce_filter_value(value)
 
     return (f" WHERE {' AND '.join(clauses)}" if clauses else ""), parameters
 

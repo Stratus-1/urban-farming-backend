@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from app.infrastructure.postgres_gateway import build_filters, quote_identifier
 
 
@@ -23,3 +25,16 @@ def test_quote_identifier_rejects_injection() -> None:
         pass
     else:
         raise AssertionError("Unsafe SQL identifiers must be rejected")
+
+
+def test_build_filters_coerces_iso_timestamps_for_asyncpg() -> None:
+    where_sql, parameters = build_filters(
+        {
+            "scheduled_at": "gte.2026-07-12T21:15:25.899Z",
+            "created_at": "2026-07-12T23:15:25+02:00",
+        }
+    )
+
+    assert '"scheduled_at" >= :filter_0' in where_sql
+    assert parameters["filter_0"] == datetime(2026, 7, 12, 21, 15, 25, 899000, tzinfo=UTC)
+    assert parameters["filter_1"] == datetime.fromisoformat("2026-07-12T23:15:25+02:00")

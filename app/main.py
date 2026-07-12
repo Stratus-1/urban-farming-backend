@@ -5,6 +5,7 @@ import httpx
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handlers
@@ -115,7 +116,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_id = request.headers.get("x-request-id") or str(uuid4())
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id, path=request.url.path)
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as error:
+            logger.exception("unhandled_request_error", error=str(error))
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "error": {
+                        "code": "internal_server_error",
+                        "message": "An unexpected server error occurred",
+                        "details": None,
+                    }
+                },
+            )
+            origin = request.headers.get("origin")
+            if origin and origin in settings.allowed_origins:
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Vary"] = "Origin"
         response.headers["X-Request-Id"] = request_id
         return response
 
