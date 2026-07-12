@@ -1,12 +1,19 @@
 from pathlib import Path
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from app.core.errors import AppError
 from app.core.security import GatewayDep, InspectorUserDep
-from app.schemas.inspections import ChecklistItemUpsert, InspectionStart, InspectionSubmit
+from app.schemas.inspections import (
+    ChecklistItemUpsert,
+    InspectionAssessment,
+    InspectionStart,
+    InspectionSubmit,
+)
 from app.services.gardens import as_list
+from app.services.inspection_scoring import score_assessment
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic"}
@@ -131,3 +138,74 @@ async def submit_report(
         token=user.access_token,
     )
     return {"report": result}
+
+
+@router.put("/reports/{report_id}/assessment")
+async def save_assessment(
+    report_id: UUID,
+    payload: InspectionAssessment,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+) -> dict:
+    scored = score_assessment(payload)
+    rows = await gateway.update(
+        "inspection_reports",
+        {
+            "sunlight_hours": scored.sunlight_hours,
+            "water_access": scored.water_access,
+            "usable_space_m2": scored.usable_space_m2,
+            "installation_types": scored.installation_types,
+            "measurements": scored.measurements,
+            "risks": [risk.model_dump() for risk in scored.risks],
+            "suitability_score": scored.suitability_score,
+            "score_breakdown": scored.score_breakdown,
+            "suitability_band": scored.suitability_band,
+            "recommended_crops": scored.recommended_crops,
+            "recommended_infrastructure": scored.recommended_infrastructure,
+            "assessment_status": "draft",
+        },
+        filters={"id": str(report_id)},
+        token=user.access_token,
+    )
+    if not rows:
+        raise AppError(404, "inspection_report_not_found", "Inspection report not found")
+    return {"report": rows[0], "assessment": scored.model_dump()}
+
+
+@router.post("/reports/{report_id}/submit-for-approval")
+async def submit_for_approval(
+    report_id: UUID,
+    payload: InspectionAssessment,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+) -> dict:
+    scored = score_assessment(payload)
+    if not scored.recommended_crops or not scored.recommended_infrastructure:
+        raise AppError(
+            422,
+            "recommendations_required",
+            "Add at least one crop and infrastructure recommendation before submission",
+        )
+    rows = await gateway.update(
+        "inspection_reports",
+        {
+            "sunlight_hours": scored.sunlight_hours,
+            "water_access": scored.water_access,
+            "usable_space_m2": scored.usable_space_m2,
+            "installation_types": scored.installation_types,
+            "measurements": scored.measurements,
+            "risks": [risk.model_dump() for risk in scored.risks],
+            "suitability_score": scored.suitability_score,
+            "score_breakdown": scored.score_breakdown,
+            "suitability_band": scored.suitability_band,
+            "recommended_crops": scored.recommended_crops,
+            "recommended_infrastructure": scored.recommended_infrastructure,
+            "assessment_status": "submitted_for_approval",
+            "submitted_at": datetime.now(UTC).isoformat(),
+        },
+        filters={"id": str(report_id)},
+        token=user.access_token,
+    )
+    if not rows:
+        raise AppError(404, "inspection_report_not_found", "Inspection report not found")
+    return {"report": rows[0], "assessment": scored.model_dump()}

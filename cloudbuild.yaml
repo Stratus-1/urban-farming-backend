@@ -1,6 +1,6 @@
 substitutions:
-  _REGION: africa-south1
-  _SERVICE: urban-farming-api
+  _REGION: europe-west1
+  _SERVICE: urban-farming-backend-git
   _REPOSITORY: urban-farming
 
 steps:
@@ -27,4 +27,3 @@ steps:
 
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${COMMIT_SHA}
-
