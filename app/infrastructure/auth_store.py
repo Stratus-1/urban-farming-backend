@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -48,6 +49,21 @@ class NativeAuthStore:
             for statement in REFRESH_TOKENS_DDL.strip().split(";"):
                 if statement.strip():
                     await connection.execute(text(statement))
+            # The preserved schema originally declared percentage values as NUMERIC(4,2)
+            # while defaulting them to 100. NUMERIC(4,2) only supports up to 99.99,
+            # causing the new-user provisioning trigger to abort every signup.
+            await connection.execute(
+                text(
+                    "ALTER TABLE IF EXISTS public.grower_stats "
+                    "ALTER COLUMN reliability_score TYPE NUMERIC(5,2)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE IF EXISTS public.grower_stats "
+                    "ALTER COLUMN crop_success_rate TYPE NUMERIC(5,2)"
+                )
+            )
 
     async def create_user(
         self,
@@ -67,6 +83,9 @@ class NativeAuthStore:
             )
             RETURNING id, email, raw_user_meta_data, created_at
             """
+        ).bindparams(
+            bindparam("app_metadata", type_=JSONB),
+            bindparam("user_metadata", type_=JSONB),
         )
         try:
             async with self.engine.begin() as connection:

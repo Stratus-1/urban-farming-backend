@@ -15,17 +15,17 @@ database for authentication, workflows, orders, or other user-facing transaction
 |---|---|
 | Frontend | `urban-farming-git` on Cloud Run |
 | Backend | `urban-farming-backend-git` on Cloud Run |
-| Database | Cloud SQL PostgreSQL 17, instance `urban-farming-db` |
-| Object storage | Cloud Storage bucket `urban-farming-inspection-photos` |
+| Database | Cloud SQL PostgreSQL 17, instance `urban-farming-db-us-central1` |
+| Object storage | Cloud Storage bucket `urban-farming-inspection-photos-us-central1` |
 | Secrets | Secret Manager (`database-url`, `jwt-secret`, and other sensitive values) |
-| Region | `europe-west1` |
+| Region | `us-central1` |
 | GCP project | `stratus-website-496818` |
 
 Production URLs:
 
-- Frontend: `https://urban-farming-git-737493449401.europe-west1.run.app`
-- API: `https://urban-farming-backend-git-737493449401.europe-west1.run.app`
-- OpenAPI: `https://urban-farming-backend-git-737493449401.europe-west1.run.app/docs`
+- Frontend: `https://urban-farming-git-737493449401.us-central1.run.app`
+- API: `https://urban-farming-backend-git-737493449401.us-central1.run.app`
+- OpenAPI: `https://urban-farming-backend-git-737493449401.us-central1.run.app/docs`
 
 ## Architecture
 
@@ -110,7 +110,7 @@ AUTH_MODE=native
 JWT_SECRET=replace-with-a-long-random-value
 DATABASE_URL=postgresql+asyncpg://urban_farming:local-development-only@127.0.0.1:5432/urban_farming
 STORAGE_BACKEND=gcs
-GCS_BUCKET=urban-farming-inspection-photos
+GCS_BUCKET=urban-farming-inspection-photos-us-central1
 GCP_PROJECT_ID=stratus-website-496818
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8081
 ```
@@ -267,7 +267,7 @@ export DATABASE_URL_PSQL='postgresql://USER:PASSWORD@HOST:5432/urban_farming'
 Use a Cloud SQL Auth Proxy endpoint for a private or non-authorized production instance:
 
 ```bash
-cloud-sql-proxy stratus-website-496818:europe-west1:urban-farming-db
+cloud-sql-proxy stratus-website-496818:us-central1:urban-farming-db-us-central1
 
 export DATABASE_URL_PSQL='postgresql://urban_farming:PASSWORD@127.0.0.1:5432/urban_farming'
 ./scripts/bootstrap_cloud_sql.sh
@@ -310,13 +310,13 @@ Before switching production traffic, reconcile at minimum:
 The frontend browser client uses `VITE_API_URL`:
 
 ```env
-VITE_API_URL=https://urban-farming-backend-git-737493449401.europe-west1.run.app
+VITE_API_URL=https://urban-farming-backend-git-737493449401.us-central1.run.app
 ```
 
 The backend must allow the exact deployed frontend origin:
 
 ```env
-ALLOWED_ORIGINS=https://urban-farming-git-737493449401.europe-west1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081
+ALLOWED_ORIGINS=https://urban-farming-git-737493449401.us-central1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081
 ```
 
 Because commas are meaningful to the `gcloud` dictionary flag parser, use a custom separator when
@@ -325,8 +325,8 @@ updating this variable:
 ```bash
 gcloud run services update urban-farming-backend-git \
   --project=stratus-website-496818 \
-  --region=europe-west1 \
-  --update-env-vars='^@^ALLOWED_ORIGINS=https://urban-farming-git-737493449401.europe-west1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081'
+  --region=us-central1 \
+  --update-env-vars='^@^ALLOWED_ORIGINS=https://urban-farming-git-737493449401.us-central1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081'
 ```
 
 An `OPTIONS` response without `Access-Control-Allow-Origin` means the origin is missing or does
@@ -346,7 +346,7 @@ gcloud builds submit \
   --config=cloudbuild.yaml
 ```
 
-The current `cloudbuild.yaml` targets `europe-west1` and service
+The current `cloudbuild.yaml` targets `us-central1` and service
 `urban-farming-backend-git`.
 
 ### Required production configuration
@@ -357,9 +357,9 @@ on the Cloud Run service:
 ```bash
 gcloud run services update urban-farming-backend-git \
   --project=stratus-website-496818 \
-  --region=europe-west1 \
-  --add-cloudsql-instances=stratus-website-496818:europe-west1:urban-farming-db \
-  --update-env-vars='^@^ENVIRONMENT=production@DATA_BACKEND=postgres@AUTH_MODE=native@STORAGE_BACKEND=gcs@GCS_BUCKET=urban-farming-inspection-photos@GCP_PROJECT_ID=stratus-website-496818@ALLOWED_ORIGINS=https://urban-farming-git-737493449401.europe-west1.run.app' \
+  --region=us-central1 \
+  --add-cloudsql-instances=stratus-website-496818:us-central1:urban-farming-db-us-central1 \
+  --update-env-vars='^@^ENVIRONMENT=production@DATA_BACKEND=postgres@AUTH_MODE=native@STORAGE_BACKEND=gcs@GCS_BUCKET=urban-farming-inspection-photos-us-central1@GCP_PROJECT_ID=stratus-website-496818@ALLOWED_ORIGINS=https://urban-farming-git-737493449401.us-central1.run.app' \
   --update-secrets='JWT_SECRET=jwt-secret:latest,DATABASE_URL=database-url:latest'
 ```
 
@@ -375,7 +375,7 @@ The runtime service account needs:
 ### Verify a deployment
 
 ```bash
-API_URL='https://urban-farming-backend-git-737493449401.europe-west1.run.app'
+API_URL='https://urban-farming-backend-git-737493449401.us-central1.run.app'
 
 curl -fsS "$API_URL/health/live"
 curl -fsS "$API_URL/health/ready"
@@ -386,7 +386,7 @@ Test CORS preflight:
 
 ```bash
 curl -i -X OPTIONS "$API_URL/api/v1/auth/login" \
-  -H 'Origin: https://urban-farming-git-737493449401.europe-west1.run.app' \
+  -H 'Origin: https://urban-farming-git-737493449401.us-central1.run.app' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: content-type'
 ```

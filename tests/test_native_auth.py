@@ -167,6 +167,20 @@ def test_native_signup_login_me_flow() -> None:
         client.__exit__(None, None, None)
 
 
+def test_native_signup_preserves_json_metadata() -> None:
+    client, store, _email = _client_with_fakes()
+    try:
+        response = client.post("/api/v1/auth/signup", json=SIGNUP)
+        assert response.status_code == 201
+        user = next(iter(store.users.values()))
+        assert user["raw_user_meta_data"] == {
+            "full_name": SIGNUP["full_name"],
+            "role": SIGNUP["role"],
+        }
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_native_refresh_rotation_and_logout() -> None:
     client, _store, _email = _client_with_fakes()
     try:

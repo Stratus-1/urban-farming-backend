@@ -34,11 +34,11 @@ DATABASE_URL_PSQL=postgresql://urban_farming:DB_PASSWORD@127.0.0.1:5432/urban_fa
   scripts/bootstrap_cloud_sql.sh
 
 # 3. Bucket for inspection photos
-gcloud storage buckets create gs://urban-farming-inspection-photos --location=africa-south1
+gcloud storage buckets create gs://urban-farming-inspection-photos-us-central1 --location=us-central1
 
 # 4. Give the service account access
 #    (default compute SA or the one on the Cloud Run service)
-SA=$(gcloud run services describe urban-farming-backend-git --region=africa-south1 \
+SA=$(gcloud run services describe urban-farming-backend-git --region=us-central1 \
   --format='value(spec.template.spec.serviceAccountName)')
 SA=${SA:-$(gcloud iam service-accounts list --filter='displayName:Compute Engine default' --format='value(email)')}
 gcloud projects add-iam-policy-binding stratus-website-496818 \
@@ -47,7 +47,7 @@ gcloud secrets add-iam-policy-binding jwt-secret \
   --member="serviceAccount:${SA}" --role=roles/secretmanager.secretAccessor
 gcloud secrets add-iam-policy-binding database-url \
   --member="serviceAccount:${SA}" --role=roles/secretmanager.secretAccessor
-gcloud storage buckets add-iam-policy-binding gs://urban-farming-inspection-photos \
+gcloud storage buckets add-iam-policy-binding gs://urban-farming-inspection-photos-us-central1 \
   --member="serviceAccount:${SA}" --role=roles/storage.objectAdmin
 ```
 
@@ -55,13 +55,13 @@ gcloud storage buckets add-iam-policy-binding gs://urban-farming-inspection-phot
 
 ```bash
 gcloud run services update urban-farming-backend-git \
-  --region=africa-south1 \
+  --region=us-central1 \
   --add-cloudsql-instances=stratus-website-496818:REGION:INSTANCE \
-  --set-env-vars="ENVIRONMENT=production,DATA_BACKEND=postgres,AUTH_MODE=native,STORAGE_BACKEND=gcs,GCS_BUCKET=urban-farming-inspection-photos,GCP_PROJECT_ID=stratus-website-496818,ALLOWED_ORIGINS=https://YOUR-FRONTEND-DOMAIN,ADMIN_EMAIL=admin@stratsol.co.za,SMTP_HOST=smtp.gmail.com,SMTP_PORT=587,SMTP_USER=admin@stratsol.co.za,SMTP_FROM_EMAIL=admin@stratsol.co.za,GOOGLE_CLIENT_ID=YOUR_OAUTH_CLIENT_ID" \
+  --set-env-vars="ENVIRONMENT=production,DATA_BACKEND=postgres,AUTH_MODE=native,STORAGE_BACKEND=gcs,GCS_BUCKET=urban-farming-inspection-photos-us-central1,GCP_PROJECT_ID=stratus-website-496818,ALLOWED_ORIGINS=https://YOUR-FRONTEND-DOMAIN,ADMIN_EMAIL=admin@stratsol.co.za,SMTP_HOST=smtp.gmail.com,SMTP_PORT=587,SMTP_USER=admin@stratsol.co.za,SMTP_FROM_EMAIL=admin@stratsol.co.za,GOOGLE_CLIENT_ID=YOUR_OAUTH_CLIENT_ID" \
   --set-secrets="JWT_SECRET=jwt-secret:latest,DATABASE_URL=database-url:latest"
 
 # SMTP password (or put it in Secret Manager too):
-gcloud run services update urban-farming-backend-git --region=africa-south1 \
+gcloud run services update urban-farming-backend-git --region=us-central1 \
   --update-env-vars="SMTP_PASSWORD=..."
 ```
 

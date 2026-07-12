@@ -1,5 +1,5 @@
 substitutions:
-  _REGION: europe-west1
+  _REGION: us-central1
   _SERVICE: urban-farming-backend-git
   _REPOSITORY: urban-farming
 
