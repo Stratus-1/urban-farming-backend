@@ -1,0 +1,3 @@
+ALTER TABLE public.garden_requests
+  ADD COLUMN IF NOT EXISTS lat NUMERIC(9,6),
+  ADD COLUMN IF NOT EXISTS lng NUMERIC(9,6);
