@@ -82,6 +82,9 @@ ALLOWED_TABLES = PUBLIC_TABLES | {
     "orders",
     "profiles",
     "properties",
+    "operational_workflows",
+    "workflow_stages",
+    "workflow_stage_events",
     "user_roles",
     "user_settings",
 }

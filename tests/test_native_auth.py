@@ -208,9 +208,7 @@ def test_native_password_reset_and_update() -> None:
     try:
         client.post("/api/v1/auth/signup", json=SIGNUP)
 
-        unknown = client.post(
-            "/api/v1/auth/password-reset", json={"email": "nobody@example.com"}
-        )
+        unknown = client.post("/api/v1/auth/password-reset", json={"email": "nobody@example.com"})
         assert unknown.status_code == 200
         assert not email.sent
 
@@ -251,6 +249,7 @@ def test_native_password_reset_and_update() -> None:
 def test_google_sign_in_creates_user(monkeypatch) -> None:
     client, _store, _email = _client_with_fakes()
     try:
+
         async def fake_claims(settings, id_token: str) -> dict:
             return {
                 "email": "google-user@example.com",

@@ -150,9 +150,7 @@ async def _native_refresh(payload: RefreshRequest, request: Request) -> dict:
 
 async def _google_claims(settings: Settings, id_token: str) -> dict:
     if not settings.google_client_id:
-        raise AppError(
-            501, "google_signin_not_configured", "GOOGLE_CLIENT_ID is not configured"
-        )
+        raise AppError(501, "google_signin_not_configured", "GOOGLE_CLIENT_ID is not configured")
     global _google_jwk_client
     if _google_jwk_client is None:
         _google_jwk_client = PyJWKClient(GOOGLE_JWKS_URL, cache_keys=True)
@@ -307,9 +305,7 @@ async def refresh(payload: RefreshRequest, request: Request, gateway: GatewayDep
 async def google_sign_in(payload: GoogleSignInRequest, request: Request) -> dict:
     settings = _settings(request)
     if settings.auth_mode != "native":
-        raise AppError(
-            501, "unsupported_auth_mode", "Google sign-in requires AUTH_MODE=native"
-        )
+        raise AppError(501, "unsupported_auth_mode", "Google sign-in requires AUTH_MODE=native")
     store = _auth_store(request)
     claims = await _google_claims(settings, payload.id_token)
     email = claims.get("email")

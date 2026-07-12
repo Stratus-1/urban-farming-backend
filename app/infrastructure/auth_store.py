@@ -60,17 +60,21 @@ class NativeAuthStore:
         try:
             async with self.engine.begin() as connection:
                 row = (
-                    await connection.execute(
-                        statement,
-                        {
-                            "id": uuid4(),
-                            "email": email.lower(),
-                            "password_hash": password_hash,
-                            "app_metadata": app_metadata or {},
-                            "user_metadata": user_metadata,
-                        },
+                    (
+                        await connection.execute(
+                            statement,
+                            {
+                                "id": uuid4(),
+                                "email": email.lower(),
+                                "password_hash": password_hash,
+                                "app_metadata": app_metadata or {},
+                                "user_metadata": user_metadata,
+                            },
+                        )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
         except IntegrityError as error:
             raise AppError(
                 409, "email_exists", "An account with this email already exists"
@@ -85,9 +89,7 @@ class NativeAuthStore:
             """
         )
         async with self.engine.connect() as connection:
-            row = (
-                await connection.execute(statement, {"email": email.lower()})
-            ).mappings().first()
+            row = (await connection.execute(statement, {"email": email.lower()})).mappings().first()
         return dict(row) if row else None
 
     async def get_user_by_id(self, user_id: UUID) -> dict[str, Any] | None:
@@ -124,9 +126,7 @@ class NativeAuthStore:
             rows = (await connection.execute(statement, {"user_id": user_id})).scalars().all()
         return sorted({str(role) for role in rows})
 
-    async def ensure_provisioned(
-        self, user_id: UUID, *, full_name: str | None, role: str
-    ) -> None:
+    async def ensure_provisioned(self, user_id: UUID, *, full_name: str | None, role: str) -> None:
         """Idempotent counterpart of the handle_new_user() trigger."""
         statements: list[tuple[str, dict[str, Any]]] = [
             (

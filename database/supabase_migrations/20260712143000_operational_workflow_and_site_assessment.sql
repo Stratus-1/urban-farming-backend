@@ -151,6 +151,68 @@ FOR INSERT TO authenticated WITH CHECK (
   public.has_role(auth.uid(),'inspector') OR public.has_role(auth.uid(),'operator') OR public.has_role(auth.uid(),'admin')
 );
 
+CREATE OR REPLACE FUNCTION public.audit_workflow_stage_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF OLD.status IS DISTINCT FROM NEW.status OR OLD.evidence IS DISTINCT FROM NEW.evidence THEN
+    INSERT INTO public.workflow_stage_events
+      (stage_id, actor_id, from_status, to_status, evidence_snapshot)
+    VALUES (NEW.id, auth.uid(), OLD.status, NEW.status, NEW.evidence);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS audit_workflow_stage_change ON public.workflow_stages;
+CREATE TRIGGER audit_workflow_stage_change AFTER UPDATE ON public.workflow_stages
+FOR EACH ROW EXECUTE FUNCTION public.audit_workflow_stage_change();
+
+CREATE OR REPLACE FUNCTION public.sync_inspection_to_operational_workflow()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_workflow_id UUID;
+BEGIN
+  SELECT w.id INTO v_workflow_id
+  FROM public.operational_workflows w
+  JOIN public.garden_requests gr ON gr.id = w.garden_request_id
+  WHERE gr.property_id = NEW.garden_id
+  ORDER BY gr.created_at DESC LIMIT 1;
+  IF v_workflow_id IS NULL THEN RETURN NEW; END IF;
+
+  UPDATE public.workflow_stages SET
+    status = CASE WHEN NEW.assessment_status = 'submitted_for_approval' THEN 'completed' ELSE 'in_progress' END,
+    owner_user_id = auth.uid(),
+    started_at = COALESCE(started_at, NEW.started_at, now()),
+    completed_at = CASE WHEN NEW.assessment_status = 'submitted_for_approval' THEN COALESCE(completed_at, now()) ELSE completed_at END,
+    evidence = evidence || jsonb_build_object('report_id', NEW.id, 'gps', jsonb_build_array(NEW.gps_lat, NEW.gps_lng))
+  WHERE workflow_id = v_workflow_id AND stage_key = 'inspector_visit';
+
+  IF NEW.suitability_score IS NOT NULL THEN
+    UPDATE public.workflow_stages SET
+      status = CASE WHEN NEW.assessment_status = 'submitted_for_approval' THEN 'completed' ELSE 'in_progress' END,
+      owner_user_id = auth.uid(), started_at = COALESCE(started_at, now()),
+      completed_at = CASE WHEN NEW.assessment_status = 'submitted_for_approval' THEN COALESCE(completed_at, now()) ELSE completed_at END,
+      evidence = jsonb_build_object('score', NEW.suitability_score, 'band', NEW.suitability_band, 'breakdown', NEW.score_breakdown)
+    WHERE workflow_id = v_workflow_id AND stage_key = 'site_score';
+  END IF;
+
+  IF NEW.assessment_status = 'submitted_for_approval' THEN
+    UPDATE public.workflow_stages SET status='completed', owner_user_id=auth.uid(),
+      started_at=COALESCE(started_at, now()), completed_at=COALESCE(completed_at, now()),
+      evidence=jsonb_build_object('crops', NEW.recommended_crops, 'infrastructure', NEW.recommended_infrastructure)
+    WHERE workflow_id=v_workflow_id AND stage_key='garden_recommendation';
+    UPDATE public.workflow_stages SET status='ready', next_action='Review the inspection evidence and record an approval decision.'
+    WHERE workflow_id=v_workflow_id AND stage_key='approval' AND status='not_started';
+    UPDATE public.operational_workflows SET current_stage='approval' WHERE id=v_workflow_id;
+  ELSE
+    UPDATE public.operational_workflows SET current_stage='inspector_visit' WHERE id=v_workflow_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS sync_inspection_to_operational_workflow ON public.inspection_reports;
+CREATE TRIGGER sync_inspection_to_operational_workflow
+AFTER UPDATE OF assessment_status, suitability_score ON public.inspection_reports
+FOR EACH ROW EXECUTE FUNCTION public.sync_inspection_to_operational_workflow();
+
 DROP TRIGGER IF EXISTS set_operational_workflows_updated_at ON public.operational_workflows;
 CREATE TRIGGER set_operational_workflows_updated_at BEFORE UPDATE ON public.operational_workflows
 FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
