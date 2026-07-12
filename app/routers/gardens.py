@@ -27,6 +27,7 @@ router = APIRouter(tags=["gardens"])
 async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
     filters = {"owner_id": user.id}
     token = user.access_token
+    now = datetime.now(UTC)
     (
         properties,
         installations,
@@ -36,6 +37,14 @@ async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
         activities,
         harvests,
         stats,
+        collections,
+        tips,
+        events,
+        registrations,
+        spotlights,
+        impact_factors,
+        point_transactions,
+        open_messages,
     ) = await asyncio.gather(
         gateway.select("properties", token=token, filters=filters, order="created_at.desc"),
         gateway.select("installations", token=token, filters=filters, order="created_at.desc"),
@@ -47,6 +56,37 @@ async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
         ),
         gateway.select("harvests", token=token, filters=filters, order="harvested_at.desc"),
         gateway.select("grower_stats", token=token, filters={"user_id": user.id}, single=True),
+        gateway.select(
+            "collections", token=token,
+            filters={"owner_id": user.id, "scheduled_at": f"gte.{now.isoformat()}"},
+            order="scheduled_at.asc", limit=5,
+        ),
+        gateway.select(
+            "grower_dashboard_tips", token=token, filters={"active": True},
+            order="priority.asc", limit=3,
+        ),
+        gateway.select(
+            "grower_events", token=token,
+            filters={
+                "visible": True,
+                "status": ["scheduled", "open", "full"],
+                "starts_at": f"gte.{now.isoformat()}",
+            },
+            order="starts_at.asc", limit=3,
+        ),
+        gateway.select(
+            "grower_event_registrations", token=token, filters={"user_id": user.id},
+        ),
+        gateway.select(
+            "community_spotlights", token=token, filters={"active": True},
+            order="priority.asc", limit=1,
+        ),
+        gateway.select("grower_impact_factors", token=token, filters={"active": True}),
+        gateway.select("green_point_transactions", token=token, filters=filters),
+        gateway.select(
+            "contact_messages", token=token,
+            filters={"user_id": user.id, "status": ["new", "open", "pending"]},
+        ),
     )
     return {
         "stats": stats,
@@ -57,6 +97,14 @@ async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
         "tasks": as_list(tasks),
         "activities": as_list(activities),
         "harvests": as_list(harvests),
+        "collections": as_list(collections),
+        "dashboardTips": as_list(tips),
+        "dashboardEvents": as_list(events),
+        "eventRegistrations": as_list(registrations),
+        "dashboardSpotlights": as_list(spotlights),
+        "impactFactors": as_list(impact_factors),
+        "greenPointTransactions": as_list(point_transactions),
+        "openMessageCount": len(as_list(open_messages)),
     }
 
 

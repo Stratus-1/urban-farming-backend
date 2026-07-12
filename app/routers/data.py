@@ -94,9 +94,14 @@ async def query_data(payload: DataQuery, gateway: GatewayDep, user: CurrentUserD
     if payload.table in ADMIN_READ_TABLES and not _is_admin(user):
         raise AppError(403, "table_forbidden", "Administrator access is required")
     filters = _scoped_filters(payload.table, payload.filters, user)
-    columns = ",".join(
-        part.strip() for part in payload.columns.split(",") if "(" not in part and ")" not in part
-    ) or "*"
+    # Cloud SQL mode does not emulate PostgREST relationship expansion. A legacy
+    # select containing `*` or a nested relationship must therefore return the
+    # complete base row, never pass `*` through the identifier quoting branch.
+    columns = (
+        "*"
+        if "*" in payload.columns or "(" in payload.columns or ")" in payload.columns
+        else payload.columns
+    )
     data = await gateway.select(
         payload.table, token=user.access_token, columns=columns, filters=filters,
         order=payload.order, limit=payload.limit, single=payload.single,
