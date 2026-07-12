@@ -1,5 +1,5 @@
-from pathlib import Path
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -30,6 +30,24 @@ async def inspector_record(gateway: GatewayDep, user: InspectorUserDep) -> dict:
     if not row and not user.has_any_role("admin", "operator"):
         raise AppError(403, "inspector_profile_missing", "Inspector profile not found")
     return row or {}
+
+
+async def ensure_report_access(
+    report_id: UUID, gateway: GatewayDep, user: InspectorUserDep
+) -> dict:
+    report = await gateway.select(
+        "inspection_reports",
+        token=user.access_token,
+        filters={"id": str(report_id)},
+        single=True,
+    )
+    if not report:
+        raise AppError(404, "inspection_report_not_found", "Inspection report not found")
+    if not user.has_any_role("admin", "operator"):
+        inspector = await inspector_record(gateway, user)
+        if str(report.get("inspector_id")) != str(inspector.get("id")):
+            raise AppError(403, "inspection_report_forbidden", "This report is not assigned to you")
+    return report
 
 
 @router.get("/assignments")
@@ -147,6 +165,9 @@ async def save_assessment(
     gateway: GatewayDep,
     user: InspectorUserDep,
 ) -> dict:
+    report = await ensure_report_access(report_id, gateway, user)
+    if report.get("assessment_status") == "submitted_for_approval":
+        raise AppError(409, "assessment_already_submitted", "This assessment is awaiting approval")
     scored = score_assessment(payload)
     rows = await gateway.update(
         "inspection_reports",
@@ -179,6 +200,13 @@ async def submit_for_approval(
     gateway: GatewayDep,
     user: InspectorUserDep,
 ) -> dict:
+    report = await ensure_report_access(report_id, gateway, user)
+    if report.get("assessment_status") == "submitted_for_approval":
+        raise AppError(
+            409,
+            "assessment_already_submitted",
+            "This assessment is already awaiting approval",
+        )
     scored = score_assessment(payload)
     if not scored.recommended_crops or not scored.recommended_infrastructure:
         raise AppError(
@@ -186,6 +214,12 @@ async def submit_for_approval(
             "recommendations_required",
             "Add at least one crop and infrastructure recommendation before submission",
         )
+    submitted_at = datetime.now(UTC).isoformat()
+    overall_status = {
+        "suitable": "pass",
+        "conditional": "warning",
+        "not_suitable": "fail",
+    }[scored.suitability_band]
     rows = await gateway.update(
         "inspection_reports",
         {
@@ -201,11 +235,19 @@ async def submit_for_approval(
             "recommended_crops": scored.recommended_crops,
             "recommended_infrastructure": scored.recommended_infrastructure,
             "assessment_status": "submitted_for_approval",
-            "submitted_at": datetime.now(UTC).isoformat(),
+            "overall_status": overall_status,
+            "follow_up_required": scored.suitability_band != "suitable",
+            "submitted_at": submitted_at,
         },
         filters={"id": str(report_id)},
         token=user.access_token,
     )
     if not rows:
         raise AppError(404, "inspection_report_not_found", "Inspection report not found")
+    await gateway.update(
+        "inspection_assignments",
+        {"status": "completed", "completed_at": submitted_at},
+        filters={"id": str(report["assignment_id"])},
+        token=user.access_token,
+    )
     return {"report": rows[0], "assessment": scored.model_dump()}
