@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime
 from typing import Any
@@ -30,6 +31,13 @@ def coerce_filter_value(value: Any) -> Any:
     if isinstance(value, str) and ISO_DATETIME.fullmatch(value):
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     return value
+
+
+def bind_value(parameter: str, value: Any) -> tuple[str, Any]:
+    """Return SQL and driver-safe values for dynamically generated statements."""
+    if isinstance(value, dict):
+        return f"CAST(:{parameter} AS JSONB)", json.dumps(value)
+    return f":{parameter}", value
 
 
 def quote_identifier(value: str) -> str:
@@ -203,8 +211,9 @@ class PostgresGateway:
             placeholders = []
             for column_name in columns:
                 parameter = f"row_{row_index}_{column_name}"
-                placeholders.append(f":{parameter}")
-                parameters[parameter] = row[column_name]
+                placeholder, bound_value = bind_value(parameter, row[column_name])
+                placeholders.append(placeholder)
+                parameters[parameter] = bound_value
             values_sql.append(f"({', '.join(placeholders)})")
 
         conflict_sql = ""
@@ -246,8 +255,9 @@ class PostgresGateway:
         parameters: dict[str, Any] = {}
         for index, (key, value) in enumerate(payload.items()):
             parameter = f"value_{index}"
-            assignments.append(f"{quote_identifier(key)} = :{parameter}")
-            parameters[parameter] = value
+            placeholder, bound_value = bind_value(parameter, value)
+            assignments.append(f"{quote_identifier(key)} = {placeholder}")
+            parameters[parameter] = bound_value
         where_sql, filter_parameters = build_filters(filters)
         parameters.update(filter_parameters)
         statement = text(

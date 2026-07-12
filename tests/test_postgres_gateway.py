@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.infrastructure.postgres_gateway import build_filters, quote_identifier
+from app.infrastructure.postgres_gateway import bind_value, build_filters, quote_identifier
 
 
 def test_build_filters_parameterizes_values() -> None:
@@ -38,3 +38,13 @@ def test_build_filters_coerces_iso_timestamps_for_asyncpg() -> None:
     assert '"scheduled_at" >= :filter_0' in where_sql
     assert parameters["filter_0"] == datetime(2026, 7, 12, 21, 15, 25, 899000, tzinfo=UTC)
     assert parameters["filter_1"] == datetime.fromisoformat("2026-07-12T23:15:25+02:00")
+
+
+def test_bind_value_serializes_json_objects_for_asyncpg() -> None:
+    placeholder, value = bind_value(
+        "details",
+        {"trackingState": "requested", "plants": ["Lettuce", "Basil"]},
+    )
+
+    assert placeholder == "CAST(:details AS JSONB)"
+    assert value == '{"trackingState": "requested", "plants": ["Lettuce", "Basil"]}'
