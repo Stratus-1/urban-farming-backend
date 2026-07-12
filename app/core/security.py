@@ -9,6 +9,7 @@ from jwt import PyJWKClient
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
+from app.core.tokens import decode_token
 from app.infrastructure.data_gateway import DataGateway
 from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.common import CurrentUser
@@ -55,6 +56,20 @@ async def _supabase_user(
     )
 
 
+async def _native_user(token: str, settings: Settings, gateway: DataGateway) -> CurrentUser:
+    claims = decode_token(settings, token, "access")
+    user_id = UUID(str(claims["sub"]))
+    role_rows = await gateway.select(
+        "user_roles", token=token, columns="role", filters={"user_id": user_id}
+    )
+    return CurrentUser(
+        id=user_id,
+        email=claims.get("email"),
+        roles={str(row["role"]) for row in role_rows or []},
+        access_token=token,
+    )
+
+
 async def _oidc_user(token: str, settings: Settings, gateway: DataGateway) -> CurrentUser:
     jwk_client = PyJWKClient(str(settings.oidc_jwks_url), cache_keys=True)
 
@@ -88,9 +103,9 @@ async def get_current_user(
     authorization: Annotated[str | None, Header()] = None,
     x_user_id: Annotated[str | None, Header()] = None,
     x_user_role: Annotated[str | None, Header()] = None,
-    settings: Settings = Depends(get_settings),
 ) -> CurrentUser:
     gateway: DataGateway = request.app.state.gateway
+    settings: Settings = getattr(request.app.state, "settings", None) or get_settings()
 
     if settings.auth_mode == "development":
         if not x_user_id:
@@ -107,6 +122,8 @@ async def get_current_user(
 
     if settings.auth_mode == "supabase":
         return await _supabase_user(token, gateway, settings, request.app.state.http)
+    if settings.auth_mode == "native":
+        return await _native_user(token, settings, gateway)
     return await _oidc_user(token, settings, gateway)
 
 

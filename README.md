@@ -23,7 +23,7 @@ make rollback and data reconciliation unsafe.
 
 ```bash
 cd /Users/user/stratsol-projects/urban-farming-backend
-cp .env.example .env
+python3 scripts/sync_frontend_env.py
 uv sync --extra dev
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```

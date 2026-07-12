@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS auth.users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Refresh-token revocation list for AUTH_MODE=native (backend-minted JWTs).
+CREATE TABLE IF NOT EXISTS auth.refresh_tokens (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON auth.refresh_tokens (user_id);
+
 CREATE OR REPLACE FUNCTION auth.uid()
 RETURNS UUID
 LANGUAGE sql

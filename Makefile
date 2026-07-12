@@ -1,4 +1,9 @@
-.PHONY: install dev lint format test run
+.PHONY: install dev lint format test run db-bootstrap
+
+# Replay the schema (compatibility shim + all migrations) into the local compose postgres.
+db-bootstrap:
+	DATABASE_URL_PSQL=postgresql://urban_farming:local-development-only@127.0.0.1:5432/urban_farming \
+		scripts/bootstrap_cloud_sql.sh
 
 install:
 	uv sync --extra dev

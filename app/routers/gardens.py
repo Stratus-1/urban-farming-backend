@@ -27,7 +27,16 @@ router = APIRouter(tags=["gardens"])
 async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
     filters = {"owner_id": user.id}
     token = user.access_token
-    properties, installations, batches, requests, tasks, activities, stats = await asyncio.gather(
+    (
+        properties,
+        installations,
+        batches,
+        requests,
+        tasks,
+        activities,
+        harvests,
+        stats,
+    ) = await asyncio.gather(
         gateway.select("properties", token=token, filters=filters, order="created_at.desc"),
         gateway.select("installations", token=token, filters=filters, order="created_at.desc"),
         gateway.select("crop_batches", token=token, filters=filters, order="created_at.desc"),
@@ -36,6 +45,7 @@ async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
         gateway.select(
             "garden_activity_logs", token=token, filters=filters, order="occurred_at.desc", limit=50
         ),
+        gateway.select("harvests", token=token, filters=filters, order="harvested_at.desc"),
         gateway.select("grower_stats", token=token, filters={"user_id": user.id}, single=True),
     )
     return {
@@ -46,6 +56,7 @@ async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
         "gardenRequests": as_list(requests),
         "tasks": as_list(tasks),
         "activities": as_list(activities),
+        "harvests": as_list(harvests),
     }
 
 

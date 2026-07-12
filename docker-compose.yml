@@ -2,6 +2,9 @@ services:
   api:
     build: .
     env_file: .env
+    environment:
+      # Inside the compose network the database host is `postgres`, not 127.0.0.1.
+      DATABASE_URL: postgresql+asyncpg://urban_farming:local-development-only@postgres:5432/urban_farming
     ports:
       - "8000:8080"
     depends_on:

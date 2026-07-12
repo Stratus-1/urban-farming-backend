@@ -7,6 +7,13 @@ queries, Postgres RPCs, storage calls, and TanStack server functions.
 
 | Existing capability | Existing Supabase seam | New API seam |
 |---|---|---|
+| Signup (role in user metadata) | `supabase.auth.signUp` | `POST /api/v1/auth/signup` |
+| Login | `supabase.auth.signInWithPassword` | `POST /api/v1/auth/login` |
+| Session refresh | `supabase.auth` autorefresh | `POST /api/v1/auth/refresh` |
+| Logout | `supabase.auth.signOut` | `POST /api/v1/auth/logout` |
+| Password reset / update | `supabase.auth.resetPasswordForEmail`, `updateUser` | `POST /api/v1/auth/password-reset`, `PUT /api/v1/auth/password` |
+| Current user + roles | `supabase.auth.getUser` + `user_roles` select | `GET /api/v1/auth/me` |
+| Google sign-in | `lovable.auth.signInWithOAuth` | `POST /api/v1/auth/google` (verifies a Google ID token, AUTH_MODE=native) |
 | Grower dashboard and gardens | `properties`, `installations`, `crop_batches`, `garden_requests`, `garden_tasks`, `garden_activity_logs`, `grower_stats` | `GET /api/v1/gardens/overview` |
 | Submit garden request | `garden_requests.insert` plus notification server function | `POST /api/v1/garden-requests` |
 | Admin request workflow | `garden_requests.update` | `PATCH /api/v1/garden-requests/{id}` |

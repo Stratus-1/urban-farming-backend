@@ -21,10 +21,17 @@ class Settings(BaseSettings):
     )
 
     data_backend: Literal["supabase", "postgres"] = "supabase"
-    auth_mode: Literal["supabase", "oidc", "development"] = "supabase"
+    auth_mode: Literal["supabase", "oidc", "native", "development"] = "supabase"
     supabase_url: AnyHttpUrl | None = None
     supabase_anon_key: str | None = None
     supabase_service_role_key: str | None = None
+
+    jwt_secret: str | None = None
+    jwt_issuer: str = "urban-farming-api"
+    jwt_audience: str = "urban-farming"
+    access_token_ttl_seconds: int = 3600
+    refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
+    google_client_id: str | None = None
 
     database_url: str | None = None
     db_pool_size: int = 5
@@ -54,6 +61,13 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("supabase_url", "oidc_jwks_url", mode="before")
+    @classmethod
+    def empty_url_as_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     def validate_runtime(self) -> None:
         if self.data_backend == "supabase" and not (self.supabase_url and self.supabase_anon_key):
             raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY are required in Supabase mode")
@@ -67,6 +81,11 @@ class Settings(BaseSettings):
             self.oidc_issuer and self.oidc_audience and self.oidc_jwks_url
         ):
             raise RuntimeError("OIDC_ISSUER, OIDC_AUDIENCE and OIDC_JWKS_URL are required")
+        if self.auth_mode == "native":
+            if not self.jwt_secret:
+                raise RuntimeError("JWT_SECRET is required for native authentication")
+            if self.data_backend != "postgres":
+                raise RuntimeError("Native authentication requires DATA_BACKEND=postgres")
         if self.environment == "production" and self.auth_mode == "development":
             raise RuntimeError("Development authentication cannot run in production")
 

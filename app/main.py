@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handlers
 from app.core.logging import configure_logging
+from app.infrastructure.auth_store import NativeAuthStore
 from app.infrastructure.email import EmailGateway
 from app.infrastructure.postgres_gateway import PostgresGateway
 from app.infrastructure.storage import GCSStorageGateway, SupabaseStorageGateway
@@ -59,6 +60,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             storage = SupabaseStorageGateway(gateway)
         else:
             raise RuntimeError("Use STORAGE_BACKEND=gcs when DATA_BACKEND=postgres")
+
+        app.state.auth_store = None
+        if settings.auth_mode == "native" and isinstance(gateway, PostgresGateway):
+            auth_store = NativeAuthStore(gateway.engine)
+            try:
+                await auth_store.ensure_schema()
+            except Exception as error:  # DB may come up after the API does
+                logger.warning("auth_schema_bootstrap_failed", error=str(error))
+            app.state.auth_store = auth_store
 
         app.state.settings = settings
         app.state.http = http_client
