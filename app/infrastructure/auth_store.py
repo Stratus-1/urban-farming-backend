@@ -17,6 +17,17 @@ from app.core.errors import AppError
 
 REFRESH_TOKENS_DDL = """
 CREATE SCHEMA IF NOT EXISTS auth;
+CREATE TABLE IF NOT EXISTS auth.users (
+  id UUID PRIMARY KEY,
+  email VARCHAR(255) UNIQUE,
+  encrypted_password VARCHAR(255),
+  raw_app_meta_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  raw_user_meta_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  email_confirmed_at TIMESTAMPTZ,
+  last_sign_in_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS auth.refresh_tokens (
   id UUID PRIMARY KEY,
   user_id UUID NOT NULL,
