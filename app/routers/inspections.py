@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, Header, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.core.errors import AppError
@@ -19,27 +19,97 @@ from app.services.inspection_scoring import score_assessment
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic"}
 MAX_PHOTO_BYTES = 12 * 1024 * 1024
+PREVIEW_INSPECTOR_HEADER = "X-Inspector-Id"
+CHECKLIST_TEMPLATE = (
+    ("Garden condition", "Full garden view", True, 1),
+    ("Crop health", "Leaf and growth check", True, 2),
+    ("Irrigation status", "Watering and delivery system", True, 3),
+    ("Pest and disease", "Signs of pests or disease", True, 4),
+    ("Soil and beds", "Bed structure and soil condition", False, 5),
+    ("Safety and access", "Safe access and working area", False, 6),
+    ("User compliance", "Site usage and access checks", False, 7),
+    ("Yield progress", "Expected progress and maturity", False, 8),
+)
 
 
 class InspectionDraft(BaseModel):
     notes: str | None = None
 
 
-async def inspector_record(gateway: GatewayDep, user: InspectorUserDep) -> dict:
+async def inspector_record(
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    preview_inspector_id: UUID | None = None,
+    *,
+    require_preview: bool = False,
+) -> dict:
+    if preview_inspector_id is not None:
+        if not user.has_any_role("admin", "operator"):
+            raise AppError(403, "inspector_preview_forbidden", "Only admins can preview inspectors")
+        row = await gateway.select(
+            "inspectors",
+            token=user.access_token,
+            filters={"id": str(preview_inspector_id), "status": "active"},
+            single=True,
+        )
+        if not row:
+            raise AppError(404, "inspector_not_found", "Active inspector not found")
+        return row
+
     row = await gateway.select(
         "inspectors",
         token=user.access_token,
         filters={"user_id": user.id},
         single=True,
     )
-    if not row and not user.has_any_role("admin", "operator"):
-        raise AppError(403, "inspector_profile_missing", "Inspector profile not found")
-    return row or {}
+    if row:
+        return row
+    if user.has_any_role("admin", "operator"):
+        if require_preview:
+            raise AppError(
+                400,
+                "inspector_preview_required",
+                "Select an inspector to preview this action",
+            )
+        return {}
+    raise AppError(403, "inspector_profile_missing", "Inspector profile not found")
+
+
+async def ensure_assignment_access(
+    assignment_id: UUID,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    preview_inspector_id: UUID | None = None,
+) -> tuple[dict, dict]:
+    assignment = await gateway.select(
+        "inspection_assignments",
+        token=user.access_token,
+        filters={"id": str(assignment_id)},
+        single=True,
+    )
+    if not assignment:
+        raise AppError(404, "inspection_assignment_not_found", "Inspection assignment not found")
+    inspector = await inspector_record(
+        gateway,
+        user,
+        preview_inspector_id,
+        require_preview=user.has_any_role("admin", "operator"),
+    )
+    if str(assignment.get("inspector_id")) != str(inspector.get("id")):
+        raise AppError(
+            403,
+            "inspection_assignment_forbidden",
+            "This assignment is not assigned to you",
+        )
+    return assignment, inspector
 
 
 async def ensure_report_access(
-    report_id: UUID, gateway: GatewayDep, user: InspectorUserDep
-) -> dict:
+    report_id: UUID,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    preview_inspector_id: UUID | None = None,
+) -> tuple[dict, dict]:
     report = await gateway.select(
         "inspection_reports",
         token=user.access_token,
@@ -48,11 +118,30 @@ async def ensure_report_access(
     )
     if not report:
         raise AppError(404, "inspection_report_not_found", "Inspection report not found")
-    if not user.has_any_role("admin", "operator"):
-        inspector = await inspector_record(gateway, user)
-        if str(report.get("inspector_id")) != str(inspector.get("id")):
-            raise AppError(403, "inspection_report_forbidden", "This report is not assigned to you")
-    return report
+    inspector = await inspector_record(
+        gateway,
+        user,
+        preview_inspector_id,
+        require_preview=user.has_any_role("admin", "operator"),
+    )
+    if str(report.get("inspector_id")) != str(inspector.get("id")):
+        raise AppError(403, "inspection_report_forbidden", "This report is not assigned to you")
+    return report, inspector
+
+
+def seed_checklist_items(report_id: str) -> list[dict]:
+    return [
+        {
+            "report_id": report_id,
+            "category": category,
+            "item_name": item_name,
+            "result": "na",
+            "comment": None,
+            "requires_photo": requires_photo,
+            "sort_order": sort_order,
+        }
+        for category, item_name, requires_photo, sort_order in CHECKLIST_TEMPLATE
+    ]
 
 
 @router.get("/dashboard")
@@ -61,25 +150,12 @@ async def inspector_dashboard(
     user: InspectorUserDep,
     inspector_id: UUID | None = Query(default=None),
 ) -> dict:
-    if inspector_id is not None:
-        if not user.has_any_role("admin", "operator"):
-            raise AppError(403, "inspector_preview_forbidden", "Only admins can preview inspectors")
-        inspector = await gateway.select(
-            "inspectors",
-            token=user.access_token,
-            filters={"id": str(inspector_id), "status": "active"},
-            single=True,
-        )
-        if not inspector:
-            raise AppError(404, "inspector_not_found", "Active inspector not found")
-    else:
-        inspector = await inspector_record(gateway, user)
-        if not inspector:
-            raise AppError(
-                400,
-                "inspector_preview_required",
-                "Select an inspector to preview the dashboard",
-            )
+    inspector = await inspector_record(
+        gateway,
+        user,
+        inspector_id,
+        require_preview=user.has_any_role("admin", "operator") and inspector_id is None,
+    )
     token = user.access_token
     assignments = as_list(await gateway.select(
         "inspection_assignments", token=token, filters={"inspector_id": inspector["id"]},
@@ -134,8 +210,60 @@ async def assignments(gateway: GatewayDep, user: InspectorUserDep) -> dict:
 
 @router.post("/reports/start")
 async def start_report(
-    payload: InspectionStart, gateway: GatewayDep, user: InspectorUserDep
+    payload: InspectionStart,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
+    if preview_inspector_id is not None or (
+        user.has_any_role("admin", "operator") and not user.has_any_role("inspector")
+    ):
+        assignment, inspector = await ensure_assignment_access(
+            payload.assignment_id,
+            gateway,
+            user,
+            preview_inspector_id,
+        )
+        existing_report = await gateway.select(
+            "inspection_reports",
+            token=user.access_token,
+            filters={"assignment_id": str(payload.assignment_id)},
+            single=True,
+        )
+        if existing_report:
+            return {"report": [existing_report]}
+        started_at = datetime.now(UTC).isoformat()
+        report_rows = await gateway.insert(
+            "inspection_reports",
+            {
+                "assignment_id": str(payload.assignment_id),
+                "inspector_id": str(inspector["id"]),
+                "garden_id": str(assignment["garden_id"]),
+                "overall_status": "pending",
+                "notes": None,
+                "gps_lat": payload.gps_lat,
+                "gps_lng": payload.gps_lng,
+                "started_at": started_at,
+            },
+            token=user.access_token,
+        )
+        await gateway.update(
+            "inspection_assignments",
+            {
+                "status": "in_progress",
+                "started_at": assignment.get("started_at") or started_at,
+                "updated_at": started_at,
+            },
+            filters={"id": str(payload.assignment_id)},
+            token=user.access_token,
+        )
+        await gateway.insert(
+            "inspection_checklist_items",
+            seed_checklist_items(str(report_rows[0]["id"])),
+            token=user.access_token,
+        )
+        return {"report": report_rows}
+
     result = await gateway.rpc(
         "start_inspection_report",
         {
@@ -155,7 +283,9 @@ async def upsert_checklist_item(
     payload: ChecklistItemUpsert,
     gateway: GatewayDep,
     user: InspectorUserDep,
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
+    await ensure_report_access(report_id, gateway, user, preview_inspector_id)
     rows = await gateway.insert(
         "inspection_checklist_items",
         {
@@ -172,9 +302,13 @@ async def upsert_checklist_item(
 
 @router.patch("/reports/{report_id}")
 async def save_report_draft(
-    report_id: UUID, payload: InspectionDraft, gateway: GatewayDep, user: InspectorUserDep
+    report_id: UUID,
+    payload: InspectionDraft,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
-    await ensure_report_access(report_id, gateway, user)
+    await ensure_report_access(report_id, gateway, user, preview_inspector_id)
     rows = await gateway.update(
         "inspection_reports",
         {"notes": payload.notes, "updated_at": datetime.now(UTC).isoformat()},
@@ -193,7 +327,9 @@ async def upload_photo(
     label: str = Form(...),
     checklist_item_id: UUID | None = Form(default=None),
     photo_type: str = Form(default="extra"),
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
+    _, inspector = await ensure_report_access(report_id, gateway, user, preview_inspector_id)
     content_type = file.content_type or "application/octet-stream"
     if content_type not in ALLOWED_IMAGE_TYPES:
         raise AppError(415, "unsupported_photo", "Use JPEG, PNG, WebP, or HEIC photos")
@@ -201,7 +337,7 @@ async def upload_photo(
     if len(content) > MAX_PHOTO_BYTES:
         raise AppError(413, "photo_too_large", "Inspection photos must be 12 MB or smaller")
     extension = Path(file.filename or "photo.jpg").suffix.lower() or ".jpg"
-    path = f"{user.id}/{report_id}/{uuid4()}{extension}"
+    path = f"{inspector['user_id']}/{report_id}/{uuid4()}{extension}"
     storage_path = await request.app.state.storage.upload(
         path, content, content_type, user.access_token
     )
@@ -221,8 +357,56 @@ async def upload_photo(
 
 @router.post("/reports/submit")
 async def submit_report(
-    payload: InspectionSubmit, gateway: GatewayDep, user: InspectorUserDep
+    payload: InspectionSubmit,
+    gateway: GatewayDep,
+    user: InspectorUserDep,
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
+    if preview_inspector_id is not None or (
+        user.has_any_role("admin", "operator") and not user.has_any_role("inspector")
+    ):
+        report, _ = await ensure_report_access(
+            payload.report_id,
+            gateway,
+            user,
+            preview_inspector_id,
+        )
+        if payload.overall_status not in {"pass", "warning", "fail"}:
+            raise AppError(422, "invalid_inspection_status", "Invalid inspection status")
+        submitted_at = datetime.now(UTC).isoformat()
+        rows = await gateway.update(
+            "inspection_reports",
+            {
+                "overall_status": payload.overall_status,
+                "notes": payload.notes,
+                "follow_up_required": payload.follow_up_required,
+                "gps_lat": payload.gps_lat,
+                "gps_lng": payload.gps_lng,
+                "submitted_at": submitted_at,
+                "updated_at": submitted_at,
+            },
+            filters={"id": str(payload.report_id)},
+            token=user.access_token,
+        )
+        assignment_status = (
+            "failed"
+            if payload.overall_status == "fail"
+            else "flagged"
+            if payload.follow_up_required
+            else "completed"
+        )
+        await gateway.update(
+            "inspection_assignments",
+            {
+                "status": assignment_status,
+                "completed_at": submitted_at,
+                "updated_at": submitted_at,
+            },
+            filters={"id": str(report["assignment_id"])},
+            token=user.access_token,
+        )
+        return {"report": rows}
+
     result = await gateway.rpc(
         "submit_inspection_report",
         {
@@ -244,8 +428,9 @@ async def save_assessment(
     payload: InspectionAssessment,
     gateway: GatewayDep,
     user: InspectorUserDep,
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
-    report = await ensure_report_access(report_id, gateway, user)
+    report, _ = await ensure_report_access(report_id, gateway, user, preview_inspector_id)
     if report.get("assessment_status") == "submitted_for_approval":
         raise AppError(409, "assessment_already_submitted", "This assessment is awaiting approval")
     scored = score_assessment(payload)
@@ -279,8 +464,9 @@ async def submit_for_approval(
     payload: InspectionAssessment,
     gateway: GatewayDep,
     user: InspectorUserDep,
+    preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
-    report = await ensure_report_access(report_id, gateway, user)
+    report, _ = await ensure_report_access(report_id, gateway, user, preview_inspector_id)
     if report.get("assessment_status") == "submitted_for_approval":
         raise AppError(
             409,
