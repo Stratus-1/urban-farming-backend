@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Any
 
 import jwt
@@ -25,6 +25,15 @@ ISO_DATETIME = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 
+POSTGRES_TIMESTAMP_TYPES = {
+    "timestamp with time zone",
+    "timestamp without time zone",
+}
+POSTGRES_TIME_TYPES = {
+    "time with time zone",
+    "time without time zone",
+}
+
 
 def coerce_filter_value(value: Any) -> Any:
     """Convert JSON-safe ISO timestamps into values asyncpg can bind to TIMESTAMPTZ."""
@@ -38,6 +47,37 @@ def bind_value(parameter: str, value: Any) -> tuple[str, Any]:
     if isinstance(value, dict):
         return f"CAST(:{parameter} AS JSONB)", json.dumps(value)
     return f":{parameter}", value
+
+
+def coerce_column_value(value: Any, data_type: str | None) -> Any:
+    """Convert JSON temporal strings to the Python values required by asyncpg.
+
+    The compatibility data endpoint accepts JSON, so dates and timestamps arrive as
+    strings. SQLAlchemy reflects the target PostgreSQL type when preparing the dynamic
+    statement, and asyncpg then requires the corresponding Python temporal object.
+    """
+    if not isinstance(value, str) or not data_type:
+        return value
+    try:
+        if data_type == "date":
+            return date.fromisoformat(value)
+        if data_type in POSTGRES_TIMESTAMP_TYPES:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if data_type == "timestamp without time zone" and parsed.tzinfo is not None:
+                return parsed.replace(tzinfo=None)
+            return parsed
+        if data_type in POSTGRES_TIME_TYPES:
+            parsed_time = time.fromisoformat(value.replace("Z", "+00:00"))
+            if data_type == "time without time zone" and parsed_time.tzinfo is not None:
+                return parsed_time.replace(tzinfo=None)
+            return parsed_time
+    except ValueError as error:
+        raise AppError(
+            422,
+            "invalid_temporal_value",
+            f"Invalid {data_type} value",
+        ) from error
+    return value
 
 
 def quote_identifier(value: str) -> str:
@@ -91,6 +131,7 @@ class PostgresGateway:
             pool_size=pool_size,
             max_overflow=max_overflow,
         )
+        self._column_types: dict[str, dict[str, str]] = {}
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -98,6 +139,20 @@ class PostgresGateway:
     async def ping(self) -> bool:
         async with self.engine.connect() as connection:
             return bool(await connection.scalar(text("select true")))
+
+    async def _table_column_types(self, table: str) -> dict[str, str]:
+        cached = self._column_types.get(table)
+        if cached is not None:
+            return cached
+        statement = text(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = :table"
+        )
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(statement, {"table": table})).mappings().all()
+        column_types = {str(row["column_name"]): str(row["data_type"]) for row in rows}
+        self._column_types[table] = column_types
+        return column_types
 
     async def ensure_auth_user(self, payload: dict[str, Any]) -> None:
         """Keep the Cloud SQL auth compatibility row aligned during staged auth migration."""
@@ -204,6 +259,7 @@ class PostgresGateway:
         columns = list(rows[0])
         if any(set(row) != set(columns) for row in rows):
             raise ValueError("Bulk insert rows must contain the same fields")
+        column_types = await self._table_column_types(table)
         column_sql = ", ".join(quote_identifier(item) for item in columns)
         values_sql: list[str] = []
         parameters: dict[str, Any] = {}
@@ -211,7 +267,8 @@ class PostgresGateway:
             placeholders = []
             for column_name in columns:
                 parameter = f"row_{row_index}_{column_name}"
-                placeholder, bound_value = bind_value(parameter, row[column_name])
+                value = coerce_column_value(row[column_name], column_types.get(column_name))
+                placeholder, bound_value = bind_value(parameter, value)
                 placeholders.append(placeholder)
                 parameters[parameter] = bound_value
             values_sql.append(f"({', '.join(placeholders)})")
@@ -251,10 +308,12 @@ class PostgresGateway:
         token: str | None = None,
     ) -> list[dict[str, Any]]:
         ensure_table_allowed(table)
+        column_types = await self._table_column_types(table)
         assignments = []
         parameters: dict[str, Any] = {}
         for index, (key, value) in enumerate(payload.items()):
             parameter = f"value_{index}"
+            value = coerce_column_value(value, column_types.get(key))
             placeholder, bound_value = bind_value(parameter, value)
             assignments.append(f"{quote_identifier(key)} = {placeholder}")
             parameters[parameter] = bound_value
