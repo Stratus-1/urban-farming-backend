@@ -157,39 +157,92 @@ async def inspector_dashboard(
         require_preview=user.has_any_role("admin", "operator") and inspector_id is None,
     )
     token = user.access_token
-    assignments = as_list(await gateway.select(
-        "inspection_assignments", token=token, filters={"inspector_id": inspector["id"]},
-        order="due_date.asc",
-    ))
+    assignments = as_list(
+        await gateway.select(
+            "inspection_assignments",
+            token=token,
+            filters={"inspector_id": inspector["id"]},
+            order="due_date.asc",
+        )
+    )
     garden_ids = list({row["garden_id"] for row in assignments if row.get("garden_id")})
-    reports = as_list(await gateway.select(
-        "inspection_reports", token=token, filters={"inspector_id": inspector["id"]},
-        order="updated_at.desc",
-    ))
+    reports = as_list(
+        await gateway.select(
+            "inspection_reports",
+            token=token,
+            filters={"inspector_id": inspector["id"]},
+            order="updated_at.desc",
+        )
+    )
     report_ids = list({row["id"] for row in reports if row.get("id")})
-    properties = as_list(await gateway.select(
-        "properties", token=token, filters={"id": garden_ids},
-    )) if garden_ids else []
+    properties = (
+        as_list(
+            await gateway.select(
+                "properties",
+                token=token,
+                filters={"id": garden_ids},
+            )
+        )
+        if garden_ids
+        else []
+    )
     owner_ids = list({row["owner_id"] for row in properties if row.get("owner_id")})
-    installations = as_list(await gateway.select(
-        "installations", token=token, filters={"property_id": garden_ids},
-        order="created_at.desc",
-    )) if garden_ids else []
-    profiles = as_list(await gateway.select(
-        "profiles", token=token, filters={"id": owner_ids},
-    )) if owner_ids else []
-    checklist_items = as_list(await gateway.select(
-        "inspection_checklist_items", token=token, filters={"report_id": report_ids},
-        order="sort_order.asc",
-    )) if report_ids else []
-    photos = as_list(await gateway.select(
-        "inspection_photos", token=token, filters={"report_id": report_ids},
-        order="created_at.asc",
-    )) if report_ids else []
+    installations = (
+        as_list(
+            await gateway.select(
+                "installations",
+                token=token,
+                filters={"property_id": garden_ids},
+                order="created_at.desc",
+            )
+        )
+        if garden_ids
+        else []
+    )
+    profiles = (
+        as_list(
+            await gateway.select(
+                "profiles",
+                token=token,
+                filters={"id": owner_ids},
+            )
+        )
+        if owner_ids
+        else []
+    )
+    checklist_items = (
+        as_list(
+            await gateway.select(
+                "inspection_checklist_items",
+                token=token,
+                filters={"report_id": report_ids},
+                order="sort_order.asc",
+            )
+        )
+        if report_ids
+        else []
+    )
+    photos = (
+        as_list(
+            await gateway.select(
+                "inspection_photos",
+                token=token,
+                filters={"report_id": report_ids},
+                order="created_at.asc",
+            )
+        )
+        if report_ids
+        else []
+    )
     return {
-        "inspector": inspector, "assignments": assignments, "properties": properties,
-        "ownerProfiles": profiles, "installations": installations, "reports": reports,
-        "checklistItems": checklist_items, "photos": photos,
+        "inspector": inspector,
+        "assignments": assignments,
+        "properties": properties,
+        "ownerProfiles": profiles,
+        "installations": installations,
+        "reports": reports,
+        "checklistItems": checklist_items,
+        "photos": photos,
     }
 
 
@@ -312,7 +365,8 @@ async def save_report_draft(
     rows = await gateway.update(
         "inspection_reports",
         {"notes": payload.notes, "updated_at": datetime.now(UTC).isoformat()},
-        filters={"id": str(report_id)}, token=user.access_token,
+        filters={"id": str(report_id)},
+        token=user.access_token,
     )
     return rows[0]
 

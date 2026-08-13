@@ -21,9 +21,7 @@ FILTER_OPERATORS = {
     "ilike": "ILIKE",
 }
 
-ISO_DATETIME = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
-)
+ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
 POSTGRES_TIMESTAMP_TYPES = {
     "timestamp with time zone",

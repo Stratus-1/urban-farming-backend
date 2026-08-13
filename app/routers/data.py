@@ -30,23 +30,45 @@ OWNER_COLUMNS = {
     "user_settings": "user_id",
 }
 ADMIN_READ_TABLES = {
-    "inspection_assignments", "inspection_checklist_items", "inspection_photos",
-    "inspection_reports", "inspectors", "operational_workflows", "order_items",
-    "workflow_stages", "workflow_stage_events",
+    "inspection_assignments",
+    "inspection_checklist_items",
+    "inspection_photos",
+    "inspection_reports",
+    "inspectors",
+    "operational_workflows",
+    "order_items",
+    "workflow_stages",
+    "workflow_stage_events",
 }
 ADMIN_MUTATION_TABLES = {
-    "garden_requests", "inspection_assignments", "installations", "properties",
+    "garden_requests",
+    "inspection_assignments",
+    "installations",
+    "properties",
 }
 USER_MUTATION_TABLES = {
-    "buyer_profiles", "calculator_plans", "garden_activity_logs", "garden_requests",
-    "garden_tasks", "grower_event_registrations", "installations", "profiles", "properties",
+    "buyer_profiles",
+    "calculator_plans",
+    "garden_activity_logs",
+    "garden_requests",
+    "garden_tasks",
+    "grower_event_registrations",
+    "installations",
+    "profiles",
+    "properties",
     "user_settings",
 }
 ADMIN_RPCS = {
-    "admin_dashboard_order_status", "admin_dashboard_overview",
-    "admin_dashboard_recent_messages", "admin_dashboard_recent_orders",
-    "admin_dashboard_summary", "admin_dashboard_top_crops", "admin_dashboard_trends",
-    "admin_users_directory", "admin_users_trends", "apply_inspection_request_decision",
+    "admin_dashboard_order_status",
+    "admin_dashboard_overview",
+    "admin_dashboard_recent_messages",
+    "admin_dashboard_recent_orders",
+    "admin_dashboard_summary",
+    "admin_dashboard_top_crops",
+    "admin_dashboard_trends",
+    "admin_users_directory",
+    "admin_users_trends",
+    "apply_inspection_request_decision",
 }
 INSPECTOR_RPCS = {"start_inspection_report", "submit_inspection_report"}
 
@@ -103,8 +125,13 @@ async def query_data(payload: DataQuery, gateway: GatewayDep, user: CurrentUserD
         else payload.columns
     )
     data = await gateway.select(
-        payload.table, token=user.access_token, columns=columns, filters=filters,
-        order=payload.order, limit=payload.limit, single=payload.single,
+        payload.table,
+        token=user.access_token,
+        columns=columns,
+        filters=filters,
+        order=payload.order,
+        limit=payload.limit,
+        single=payload.single,
     )
     count = (1 if data else 0) if payload.single else len(data or [])
     return {"data": None if payload.count else data, "count": count if payload.count else None}
@@ -137,8 +164,11 @@ async def mutate_data(payload: DataMutation, gateway: GatewayDep, user: CurrentU
             if not isinstance(payload.payload, list):
                 mutation_payload = mutation_payload[0]
         rows = await gateway.insert(
-            payload.table, mutation_payload, token=token,
-            upsert=payload.operation == "upsert", on_conflict=payload.on_conflict,
+            payload.table,
+            mutation_payload,
+            token=token,
+            upsert=payload.operation == "upsert",
+            on_conflict=payload.on_conflict,
         )
     return {"data": rows}
 

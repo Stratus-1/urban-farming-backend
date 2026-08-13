@@ -127,8 +127,9 @@ async def test_start_report_allows_admin_preview_to_act_as_selected_inspector() 
 
 
 @pytest.mark.asyncio
-async def test_start_report_requires_preview_inspector_for_admin_without_inspector_profile(
-) -> None:
+async def test_start_report_requires_preview_inspector_for_admin_without_inspector_profile() -> (
+    None
+):
     gateway = FakeGateway()
 
     with pytest.raises(AppError) as raised:

@@ -60,9 +60,9 @@ def test_bind_value_serializes_json_objects_for_asyncpg() -> None:
 
 def test_coerce_column_value_converts_json_temporal_strings_for_asyncpg() -> None:
     assert coerce_column_value("2026-07-14", "date") == date(2026, 7, 14)
-    assert coerce_column_value(
-        "2026-07-14T07:00:00.000Z", "timestamp with time zone"
-    ) == datetime(2026, 7, 14, 7, tzinfo=UTC)
+    assert coerce_column_value("2026-07-14T07:00:00.000Z", "timestamp with time zone") == datetime(
+        2026, 7, 14, 7, tzinfo=UTC
+    )
     assert coerce_column_value("07:30:00", "time without time zone") == time(7, 30)
 
 
