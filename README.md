@@ -13,19 +13,27 @@ database for authentication, workflows, orders, or other user-facing transaction
 
 | Component | Service |
 |---|---|
-| Frontend | `urban-farming-git` on Cloud Run |
-| Backend | `urban-farming-backend-git` on Cloud Run |
+| Frontend | `urban-farming-web-prod` and `urban-farming-web-staging` on Cloud Run |
+| Backend | `urban-farming-backend-prod` and `urban-farming-backend-staging` on Cloud Run |
 | Database | Cloud SQL PostgreSQL 17, instance `urban-farming-db-us-central1` |
 | Object storage | Cloud Storage bucket `urban-farming-inspection-photos-us-central1` |
-| Secrets | Secret Manager (`database-url`, `jwt-secret`, and other sensitive values) |
+| Secrets | Secret Manager (`database-url`, `jwt-secret`, Google OAuth credentials, and other sensitive values) |
 | Region | `us-central1` |
 | GCP project | `stratus-website-496818` |
 
 Production URLs:
 
-- Frontend: `https://urban-farming-git-737493449401.us-central1.run.app`
-- API: `https://urban-farming-backend-git-737493449401.us-central1.run.app`
-- OpenAPI: `https://urban-farming-backend-git-737493449401.us-central1.run.app/docs`
+- Frontend: `https://urban-farming-web-prod-737493449401.us-central1.run.app`
+- Staging frontend: `https://urban-farming-web-staging-737493449401.us-central1.run.app`
+- API: `https://urban-farming-backend-prod-737493449401.us-central1.run.app`
+- Staging API: `https://urban-farming-backend-staging-737493449401.us-central1.run.app`
+- OpenAPI: `https://urban-farming-backend-prod-737493449401.us-central1.run.app/docs`
+
+Current rollout state:
+
+- Native auth, JWT sessions, Cloud SQL, and Cloud Run deployment are in place.
+- Google login is being moved to a true redirect/callback flow.
+- The backend now expects a Google OAuth client secret for the code exchange path.
 
 ## Architecture
 
@@ -177,6 +185,8 @@ are parsed into an origin list.
 | `ACCESS_TOKEN_TTL_SECONDS` | Optional | Access token lifetime; default 3600 |
 | `REFRESH_TOKEN_TTL_SECONDS` | Optional | Refresh token lifetime; default 2592000 |
 | `GOOGLE_CLIENT_ID` | Google login | Google web OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google login | Google web OAuth client secret for the redirect/callback flow |
+| `GOOGLE_CLIENT_SECRET` | Google login | OAuth client secret for the redirect/callback code exchange |
 | `SUPABASE_URL` | Supabase data/auth | Supabase project URL |
 | `SUPABASE_ANON_KEY` | Supabase data/auth | Public Supabase client key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Selected admin operations | Privileged Supabase key; secret only |
@@ -202,14 +212,15 @@ always inspect the revision logs for the actual configuration exception.
 ## Authentication
 
 Production currently uses backend-native authentication with JWT access/refresh tokens stored
-against the Cloud SQL compatibility `auth` schema.
+against the Cloud SQL compatibility `auth` schema. Google login now uses a redirect/callback code
+exchange so the frontend never handles Google ID tokens directly.
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/v1/auth/signup` | Create a user and provision their profile/role |
 | `POST /api/v1/auth/login` | Authenticate email/password and issue a session |
 | `POST /api/v1/auth/refresh` | Rotate a refresh token |
-| `POST /api/v1/auth/google` | Verify a Google ID token and create/login a user |
+| `POST /api/v1/auth/google` | Exchange a Google authorization code or verify an ID token, then create/login a user |
 | `POST /api/v1/auth/logout` | Revoke the current user's refresh tokens |
 | `POST /api/v1/auth/password-reset` | Send a short-lived password recovery link |
 | `PUT /api/v1/auth/password` | Set a password using an access or recovery token |
@@ -471,4 +482,3 @@ A `503` points to database/network/credential availability and should prevent tr
 - `docs/API_INVENTORY.md` — Supabase-to-API contract mapping
 - `docs/DEPLOY_CLOUD_RUN.md` — focused Cloud Run deployment notes
 - `/docs` on a running service — generated interactive API documentation
-

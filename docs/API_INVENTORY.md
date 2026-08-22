@@ -13,7 +13,7 @@ queries, Postgres RPCs, storage calls, and TanStack server functions.
 | Logout | `supabase.auth.signOut` | `POST /api/v1/auth/logout` |
 | Password reset / update | `supabase.auth.resetPasswordForEmail`, `updateUser` | `POST /api/v1/auth/password-reset`, `PUT /api/v1/auth/password` |
 | Current user + roles | `supabase.auth.getUser` + `user_roles` select | `GET /api/v1/auth/me` |
-| Google sign-in | `lovable.auth.signInWithOAuth` | `POST /api/v1/auth/google` (verifies a Google ID token, AUTH_MODE=native) |
+| Google sign-in | `lovable.auth.signInWithOAuth` | `POST /api/v1/auth/google` (redirect/callback code exchange in AUTH_MODE=native; no browser-side Google token handling) |
 | Grower dashboard and gardens | `properties`, `installations`, `crop_batches`, `garden_requests`, `garden_tasks`, `garden_activity_logs`, `grower_stats` | `GET /api/v1/gardens/overview` |
 | Submit garden request | `garden_requests.insert` plus notification server function | `POST /api/v1/garden-requests` |
 | Admin request workflow | `garden_requests.update` | `PATCH /api/v1/garden-requests/{id}` |
@@ -43,4 +43,3 @@ The React application still calls Supabase directly. Move one domain hook at a t
 starting with write operations, then dashboard reads, then admin reporting. Do not remove Supabase
 RLS or direct-query code until traffic and reconciliation show that the corresponding API route is
 stable.
-

@@ -346,6 +346,43 @@ def test_google_sign_in_creates_user(monkeypatch) -> None:
         client.__exit__(None, None, None)
 
 
+def test_google_sign_in_code_flow_creates_user(monkeypatch) -> None:
+    client, _store, _email = _client_with_fakes()
+    try:
+        async def fake_exchange(settings, request, *, code: str, redirect_uri: str) -> dict:
+            assert code == "auth-code-123"
+            assert redirect_uri == "https://app.example.com/auth/google/callback"
+            return {"id_token": "fake-token"}
+
+        async def fake_claims(settings, id_token: str) -> dict:
+            assert id_token == "fake-token"
+            return {
+                "email": "code-user@example.com",
+                "email_verified": True,
+                "name": "Code Flow User",
+                "sub": "google-sub-456",
+            }
+
+        monkeypatch.setattr("app.routers.auth._exchange_google_code", fake_exchange)
+        monkeypatch.setattr("app.routers.auth._google_claims", fake_claims)
+
+        response = client.post(
+            "/api/v1/auth/google",
+            json={
+                "code": "auth-code-123",
+                "redirect_uri": "https://app.example.com/auth/google/callback",
+                "role": "grower",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["user"]["email"] == "code-user@example.com"
+        assert body["roles"] == ["grower"]
+        assert body["session"]["access_token"]
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_native_mode_requires_jwt_secret() -> None:
     settings = _native_settings()
     settings.jwt_secret = None

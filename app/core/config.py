@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     access_token_ttl_seconds: int = 3600
     refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
     google_client_id: str | None = None
+    google_client_secret: str | None = None
 
     database_url: str | None = None
     db_pool_size: int = 5
@@ -95,6 +96,10 @@ class Settings(BaseSettings):
                 raise RuntimeError("JWT_SECRET is required for native authentication")
             if self.data_backend != "postgres":
                 raise RuntimeError("Native authentication requires DATA_BACKEND=postgres")
+            if self.google_client_id and not self.google_client_secret:
+                raise RuntimeError(
+                    "GOOGLE_CLIENT_SECRET is required when GOOGLE_CLIENT_ID is configured"
+                )
         if self.environment == "production" and self.auth_mode == "development":
             raise RuntimeError("Development authentication cannot run in production")
 

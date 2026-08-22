@@ -80,12 +80,19 @@ curl -X POST https://SERVICE_URL/api/v1/auth/signup \
 ## Google sign-in
 
 1. GCP console → APIs & Services → Credentials → Create credentials → OAuth client ID
-   (type **Web application**; add the frontend origin to authorised JS origins).
-2. Set the client ID as `GOOGLE_CLIENT_ID` on the Cloud Run service (above) and in the
-   frontend.
-3. Frontend uses Google Identity Services to obtain an **ID token**, then calls
-   `POST /api/v1/auth/google` with `{"id_token": "..."}` and receives the same
-   `{user, session, roles}` payload as `/auth/login`.
+   (type **Web application**; add the frontend origin to authorised JavaScript origins).
+2. Configure these redirect URIs on the Google OAuth client:
+   - `http://localhost:8080/auth/google/callback`
+   - `http://localhost:8080/buyer-auth/google/callback`
+   - `https://urban-farming-web-prod-737493449401.us-central1.run.app/auth/google/callback`
+   - `https://urban-farming-web-prod-737493449401.us-central1.run.app/buyer-auth/google/callback`
+   - `https://urban-farming-web-staging-737493449401.us-central1.run.app/auth/google/callback`
+   - `https://urban-farming-web-staging-737493449401.us-central1.run.app/buyer-auth/google/callback`
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the Cloud Run backend service and
+   `VITE_GOOGLE_CLIENT_ID` in the frontend.
+4. The frontend now sends the user through a redirect/callback flow, then calls
+   `POST /api/v1/auth/google` with `{"code":"...","redirect_uri":"...","role":"grower|buyer"}`
+   so the backend can exchange the code server-side.
 
 ## Auth endpoints summary (AUTH_MODE=native)
 
@@ -94,7 +101,7 @@ curl -X POST https://SERVICE_URL/api/v1/auth/signup \
 | `POST /api/v1/auth/signup` | bcrypt-hashes password into `auth.users`; role (`grower/buyer/operator/inspector`) provisioned via trigger + idempotent fallback |
 | `POST /api/v1/auth/login` | returns `{user, session:{access_token, refresh_token, expires_in}, roles}` |
 | `POST /api/v1/auth/refresh` | rotates the refresh token (old one is revoked) |
-| `POST /api/v1/auth/google` | verifies a Google ID token, creates the user on first sign-in |
+| `POST /api/v1/auth/google` | exchanges a Google authorization code or verifies an ID token, then creates/logs in the user |
 | `POST /api/v1/auth/logout` | revokes all refresh tokens for the user |
 | `POST /api/v1/auth/password-reset` | emails a 30-minute recovery link via SMTP |
 | `PUT /api/v1/auth/password` | accepts an access or recovery token; revokes existing sessions |

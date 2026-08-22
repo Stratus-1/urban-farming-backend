@@ -36,6 +36,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _PASSTHROUGH_STATUSES = {400, 401, 403, 404, 409, 422, 429}
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
 GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _google_jwk_client: PyJWKClient | None = None
 
 
@@ -206,6 +207,59 @@ async def _google_claims(settings: Settings, id_token: str) -> dict:
         raise AppError(401, "invalid_token", "The Google ID token is invalid") from error
 
 
+async def _exchange_google_code(
+    settings: Settings, request: Request, *, code: str, redirect_uri: str
+) -> dict:
+    if not settings.google_client_id:
+        raise AppError(501, "google_signin_not_configured", "GOOGLE_CLIENT_ID is not configured")
+    if not settings.google_client_secret:
+        raise AppError(
+            501,
+            "google_signin_not_configured",
+            "GOOGLE_CLIENT_SECRET is not configured",
+        )
+
+    client: httpx.AsyncClient = request.app.state.http
+    try:
+        response = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    except httpx.HTTPError as error:
+        raise AppError(
+            502, "auth_unavailable", "The authentication service is unavailable"
+        ) from error
+
+    if response.status_code >= 400:
+        try:
+            detail = response.json()
+        except ValueError:
+            detail = {}
+        message = (
+            detail.get("error_description")
+            or detail.get("msg")
+            or detail.get("message")
+            or "Authentication request failed"
+        )
+        code = detail.get("error") or detail.get("error_code") or "auth_error"
+        status = response.status_code if response.status_code in _PASSTHROUGH_STATUSES else 502
+        raise AppError(status, str(code), str(message))
+
+    try:
+        return response.json()
+    except ValueError as error:
+        raise AppError(
+            502, "auth_unavailable", "The authentication service is unavailable"
+        ) from error
+
+
 # ── Supabase GoTrue proxy (AUTH_MODE=supabase) ──────────────────────────────
 
 
@@ -350,7 +404,19 @@ async def google_sign_in(payload: GoogleSignInRequest, request: Request) -> dict
     if not _uses_native_store(settings):
         raise AppError(501, "unsupported_auth_mode", "Google sign-in requires AUTH_MODE=native")
     store = _auth_store(request)
-    claims = await _google_claims(settings, payload.id_token)
+    if payload.code:
+        token_response = await _exchange_google_code(
+            settings,
+            request,
+            code=payload.code,
+            redirect_uri=str(payload.redirect_uri),
+        )
+        id_token = token_response.get("id_token")
+        if not id_token:
+            raise AppError(502, "auth_unavailable", "Google did not return an ID token")
+        claims = await _google_claims(settings, str(id_token))
+    else:
+        claims = await _google_claims(settings, str(payload.id_token))
     email = claims.get("email")
     if not email or not claims.get("email_verified"):
         raise AppError(401, "unverified_email", "The Google account email is not verified")
