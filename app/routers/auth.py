@@ -56,6 +56,10 @@ def _auth_store(request: Request) -> NativeAuthStore:
     return store
 
 
+def _uses_native_store(settings: Settings) -> bool:
+    return settings.auth_mode in {"native", "development"} and settings.data_backend == "postgres"
+
+
 # ── Native (backend-owned) flow ─────────────────────────────────────────────
 
 
@@ -219,7 +223,7 @@ async def _gotrue(
         raise AppError(
             501,
             "unsupported_auth_mode",
-            "This endpoint is only available when AUTH_MODE=supabase or native",
+            "This endpoint is only available when AUTH_MODE=supabase, native, or development",
         )
     headers = {"apikey": settings.supabase_anon_key or ""}
     if token:
@@ -268,7 +272,7 @@ async def _load_roles(gateway: DataGateway, token: str, user_id: str) -> list[st
 
 @router.post("/signup", status_code=201)
 async def signup(payload: SignupRequest, request: Request, gateway: GatewayDep) -> dict:
-    if _settings(request).auth_mode == "native":
+    if _uses_native_store(_settings(request)):
         return await _native_signup(payload, request)
     # The handle_new_user() trigger reads `role` from the metadata and provisions
     # profiles, user_roles, grower_stats, user_settings (and inspectors) rows.
@@ -310,7 +314,7 @@ async def signup(payload: SignupRequest, request: Request, gateway: GatewayDep) 
 
 @router.post("/login")
 async def login(payload: LoginRequest, request: Request, gateway: GatewayDep) -> dict:
-    if _settings(request).auth_mode == "native":
+    if _uses_native_store(_settings(request)):
         return await _native_login(payload, request)
     data = await _gotrue(
         request,
@@ -326,7 +330,7 @@ async def login(payload: LoginRequest, request: Request, gateway: GatewayDep) ->
 
 @router.post("/refresh")
 async def refresh(payload: RefreshRequest, request: Request, gateway: GatewayDep) -> dict:
-    if _settings(request).auth_mode == "native":
+    if _uses_native_store(_settings(request)):
         return await _native_refresh(payload, request)
     data = await _gotrue(
         request,
@@ -343,7 +347,7 @@ async def refresh(payload: RefreshRequest, request: Request, gateway: GatewayDep
 @router.post("/google")
 async def google_sign_in(payload: GoogleSignInRequest, request: Request) -> dict:
     settings = _settings(request)
-    if settings.auth_mode != "native":
+    if not _uses_native_store(settings):
         raise AppError(501, "unsupported_auth_mode", "Google sign-in requires AUTH_MODE=native")
     store = _auth_store(request)
     claims = await _google_claims(settings, payload.id_token)
@@ -390,7 +394,7 @@ async def logout(
 ) -> MessageResponse:
     settings = _settings(request)
     token = _bearer_token(authorization)
-    if settings.auth_mode == "native":
+    if _uses_native_store(settings):
         claims = decode_token(settings, token, "access")
         await _auth_store(request).revoke_all_refresh_tokens(UUID(str(claims["sub"])))
         return MessageResponse(message="Signed out")
@@ -403,7 +407,7 @@ async def logout(
 async def password_reset(payload: PasswordResetRequest, request: Request) -> MessageResponse:
     settings = _settings(request)
     generic = MessageResponse(message="If the email exists, a reset link has been sent")
-    if settings.auth_mode == "native":
+    if _uses_native_store(settings):
         store = _auth_store(request)
         user = await store.get_user_by_email(str(payload.email))
         if user:
@@ -447,7 +451,7 @@ async def update_password(
 ) -> MessageResponse:
     settings = _settings(request)
     token = _bearer_token(authorization)
-    if settings.auth_mode == "native":
+    if _uses_native_store(settings):
         store = _auth_store(request)
         claims = decode_token(settings, token, "access", "recovery")
         user_id = UUID(str(claims["sub"]))

@@ -111,6 +111,9 @@ async def get_current_user(
     settings: Settings = getattr(request.app.state, "settings", None) or get_settings()
 
     if settings.auth_mode == "development":
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization.split(" ", 1)[1].strip()
+            return await _native_user(token, settings, gateway)
         if not x_user_id:
             raise AppError(401, "missing_identity", "X-User-Id is required in development mode")
         return CurrentUser(

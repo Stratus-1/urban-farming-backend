@@ -65,7 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise RuntimeError("Use STORAGE_BACKEND=gcs when DATA_BACKEND=postgres")
 
         app.state.auth_store = None
-        if settings.auth_mode == "native" and isinstance(gateway, PostgresGateway):
+        if settings.auth_mode in {"native", "development"} and isinstance(gateway, PostgresGateway):
             auth_store = NativeAuthStore(gateway.engine)
             try:
                 await auth_store.ensure_schema()

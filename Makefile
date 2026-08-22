@@ -9,7 +9,7 @@ install:
 	uv sync --extra dev
 
 dev:
-	uv run python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+	set -a; . ./.env; set +a; uv run python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 lint:
 	uv run ruff check .

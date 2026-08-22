@@ -20,6 +20,18 @@ def _native_settings() -> Settings:
     )
 
 
+def _development_settings() -> Settings:
+    return Settings(
+        environment="test",
+        auth_mode="development",
+        data_backend="postgres",
+        database_url="postgresql+asyncpg://test:test@127.0.0.1:1/test",
+        storage_backend="gcs",
+        gcs_bucket="test-bucket",
+        jwt_secret="test-secret",
+    )
+
+
 class FakeAuthStore:
     def __init__(self) -> None:
         self.users: dict[UUID, dict[str, Any]] = {}
@@ -109,8 +121,10 @@ class FakeEmail:
         return True
 
 
-def _client_with_fakes() -> tuple[TestClient, FakeAuthStore, FakeEmail]:
-    app = create_app(_native_settings())
+def _client_with_fakes(
+    settings: Settings | None = None,
+) -> tuple[TestClient, FakeAuthStore, FakeEmail]:
+    app = create_app(settings or _native_settings())
     client = TestClient(app)
     client.__enter__()
     store = FakeAuthStore()
@@ -148,6 +162,30 @@ def test_native_signup_login_me_flow() -> None:
         )
         assert bad.status_code == 401
         assert bad.json()["error"]["code"] == "invalid_credentials"
+
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": SIGNUP["email"], "password": SIGNUP["password"]},
+        )
+        assert login.status_code == 200
+        session = login.json()["session"]
+
+        me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {session['access_token']}"},
+        )
+        assert me.status_code == 200
+        assert me.json()["email"] == SIGNUP["email"]
+        assert me.json()["roles"] == ["grower"]
+    finally:
+        client.__exit__(None, None, None)
+
+
+def test_development_mode_accepts_native_login_bearer_token() -> None:
+    client, _store, _email = _client_with_fakes(_development_settings())
+    try:
+        signup = client.post("/api/v1/auth/signup", json=SIGNUP)
+        assert signup.status_code == 201
 
         login = client.post(
             "/api/v1/auth/login",
