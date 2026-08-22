@@ -185,6 +185,23 @@ def test_native_signup_preserves_json_metadata() -> None:
         client.__exit__(None, None, None)
 
 
+def test_native_signup_rejects_privileged_roles() -> None:
+    client, _store, _email = _client_with_fakes()
+    try:
+        for role in ("admin", "operator", "inspector"):
+            response = client.post(
+                "/api/v1/auth/signup",
+                json={
+                    **SIGNUP,
+                    "email": f"{role}@example.com",
+                    "role": role,
+                },
+            )
+            assert response.status_code == 422
+    finally:
+        client.__exit__(None, None, None)
+
+
 def test_native_refresh_rotation_and_logout() -> None:
     client, _store, _email = _client_with_fakes()
     try:
