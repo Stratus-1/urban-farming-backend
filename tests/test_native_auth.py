@@ -173,10 +173,14 @@ def test_native_signup_preserves_json_metadata() -> None:
         response = client.post("/api/v1/auth/signup", json=SIGNUP)
         assert response.status_code == 201
         user = next(iter(store.users.values()))
-        assert user["raw_user_meta_data"] == {
-            "full_name": SIGNUP["full_name"],
-            "role": SIGNUP["role"],
-        }
+        metadata = user["raw_user_meta_data"]
+        assert metadata["full_name"] == SIGNUP["full_name"]
+        assert metadata["role"] == SIGNUP["role"]
+        assert metadata["founding_member"] is True
+        assert metadata["member_badge"] == "Founding Member"
+        assert metadata["beginner_guide_unlocked"] is True
+        assert metadata["priority_workshop_access"] is True
+        assert metadata["giveaway_entry"] is True
     finally:
         client.__exit__(None, None, None)
 

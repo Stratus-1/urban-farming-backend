@@ -83,9 +83,13 @@ def _public_user(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _native_session(
-    settings: Settings, store: NativeAuthStore, user_id: UUID, email: str | None
+    settings: Settings,
+    store: NativeAuthStore,
+    user_id: UUID,
+    email: str | None,
+    user_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    access_token, expires_in = mint_access_token(settings, user_id, email)
+    access_token, expires_in = mint_access_token(settings, user_id, email, user_metadata)
     refresh_token, token_id, expires_at = mint_refresh_token(settings, user_id)
     await store.store_refresh_token(token_id, user_id, expires_at)
     return {
@@ -99,17 +103,32 @@ async def _native_session(
 async def _native_signup(payload: SignupRequest, request: Request) -> dict:
     settings, store = _settings(request), _auth_store(request)
     password_hash = await asyncio.to_thread(_hash_password, payload.password)
+    user_metadata = {
+        "full_name": payload.full_name,
+        "role": payload.role,
+        "founding_member": True,
+        "member_badge": "Founding Member",
+        "beginner_guide_unlocked": True,
+        "priority_workshop_access": True,
+        "giveaway_entry": True,
+    }
     user = await store.create_user(
         email=str(payload.email),
         password_hash=password_hash,
-        user_metadata={"full_name": payload.full_name, "role": payload.role},
+        user_metadata=user_metadata,
     )
     user_id = UUID(str(user["id"]))
     # The replayed handle_new_user() trigger normally provisions these rows;
     # this covers databases bootstrapped without it.
     await store.ensure_provisioned(user_id, full_name=payload.full_name, role=payload.role)
     roles = await store.user_roles(user_id) or [payload.role]
-    session = await _native_session(settings, store, user_id, user.get("email"))
+    session = await _native_session(
+        settings,
+        store,
+        user_id,
+        user.get("email"),
+        user.get("raw_user_meta_data") or user_metadata,
+    )
     return {
         "user": _public_user(user),
         "session": session,
@@ -128,7 +147,13 @@ async def _native_login(payload: LoginRequest, request: Request) -> dict:
     user_id = UUID(str(user["id"]))
     await store.touch_last_sign_in(user_id)
     roles = await store.user_roles(user_id)
-    session = await _native_session(settings, store, user_id, user.get("email"))
+    session = await _native_session(
+        settings,
+        store,
+        user_id,
+        user.get("email"),
+        user.get("raw_user_meta_data") or {},
+    )
     return {"user": _public_user(user), "session": session, "roles": roles}
 
 
@@ -144,7 +169,13 @@ async def _native_refresh(payload: RefreshRequest, request: Request) -> dict:
         raise AppError(401, "invalid_token", "The refresh token is invalid or revoked")
     await store.revoke_refresh_token(token_id)
     roles = await store.user_roles(user_id)
-    session = await _native_session(settings, store, user_id, user.get("email"))
+    session = await _native_session(
+        settings,
+        store,
+        user_id,
+        user.get("email"),
+        user.get("raw_user_meta_data") or {},
+    )
     return {"user": _public_user(user), "session": session, "roles": roles}
 
 
@@ -249,7 +280,15 @@ async def signup(payload: SignupRequest, request: Request, gateway: GatewayDep) 
         json={
             "email": payload.email,
             "password": payload.password,
-            "data": {"full_name": payload.full_name, "role": payload.role},
+            "data": {
+                "full_name": payload.full_name,
+                "role": payload.role,
+                "founding_member": True,
+                "member_badge": "Founding Member",
+                "beginner_guide_unlocked": True,
+                "priority_workshop_access": True,
+                "giveaway_entry": True,
+            },
         },
         params=params,
     )
@@ -316,7 +355,15 @@ async def google_sign_in(payload: GoogleSignInRequest, request: Request) -> dict
         user = await store.create_user(
             email=email,
             password_hash=None,
-            user_metadata={"full_name": claims.get("name"), "role": payload.role},
+            user_metadata={
+                "full_name": claims.get("name"),
+                "role": payload.role,
+                "founding_member": True,
+                "member_badge": "Founding Member",
+                "beginner_guide_unlocked": True,
+                "priority_workshop_access": True,
+                "giveaway_entry": True,
+            },
             app_metadata={"provider": "google", "google_sub": claims.get("sub")},
         )
         await store.ensure_provisioned(
@@ -325,7 +372,13 @@ async def google_sign_in(payload: GoogleSignInRequest, request: Request) -> dict
     user_id = UUID(str(user["id"]))
     await store.touch_last_sign_in(user_id)
     roles = await store.user_roles(user_id)
-    session = await _native_session(settings, store, user_id, user.get("email"))
+    session = await _native_session(
+        settings,
+        store,
+        user_id,
+        user.get("email"),
+        user.get("raw_user_meta_data") or {},
+    )
     return {"user": _public_user(user), "session": session, "roles": roles}
 
 
@@ -408,4 +461,9 @@ async def update_password(
 
 @router.get("/me")
 async def me(user: CurrentUserDep) -> dict:
-    return {"id": str(user.id), "email": user.email, "roles": sorted(user.roles)}
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "user_metadata": user.user_metadata,
+        "roles": sorted(user.roles),
+    }

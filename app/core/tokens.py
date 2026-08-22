@@ -1,6 +1,7 @@
 """Backend-minted JWTs for AUTH_MODE=native."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
@@ -11,7 +12,12 @@ from app.core.errors import AppError
 ALGORITHM = "HS256"
 
 
-def mint_access_token(settings: Settings, user_id: UUID, email: str | None) -> tuple[str, int]:
+def mint_access_token(
+    settings: Settings,
+    user_id: UUID,
+    email: str | None,
+    user_metadata: dict[str, Any] | None = None,
+) -> tuple[str, int]:
     now = datetime.now(UTC)
     expires_in = settings.access_token_ttl_seconds
     claims = {
@@ -19,6 +25,7 @@ def mint_access_token(settings: Settings, user_id: UUID, email: str | None) -> t
         "aud": settings.jwt_audience,
         "sub": str(user_id),
         "email": email,
+        "user_metadata": user_metadata or {},
         "type": "access",
         "iat": now,
         "exp": now + timedelta(seconds=expires_in),

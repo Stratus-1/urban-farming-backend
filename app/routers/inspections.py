@@ -186,6 +186,18 @@ async def inspector_dashboard(
         if garden_ids
         else []
     )
+    garden_requests = (
+        as_list(
+            await gateway.select(
+                "garden_requests",
+                token=token,
+                filters={"property_id": garden_ids},
+                order="updated_at.desc",
+            )
+        )
+        if garden_ids
+        else []
+    )
     owner_ids = list({row["owner_id"] for row in properties if row.get("owner_id")})
     installations = (
         as_list(
@@ -238,6 +250,7 @@ async def inspector_dashboard(
         "inspector": inspector,
         "assignments": assignments,
         "properties": properties,
+        "gardenRequests": garden_requests,
         "ownerProfiles": profiles,
         "installations": installations,
         "reports": reports,

@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     smtp_from_name: str = "Urban Farming"
     admin_email: str = "admin@stratsol.co.za"
     geocoding_user_agent: str = "UrbanFarmingPlatform/1.0"
+    app_base_url: str = "http://127.0.0.1:8080"
+    stripe_secret_key: str | None = None
+    stripe_publishable_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_price_premium_monthly: str | None = None
+    stripe_premium_monthly_name: str = "Urban Farming Premium"
+    stripe_premium_monthly_amount_zar: int = 9900
+    stripe_billing_success_path: str = "/settings?billing=success"
+    stripe_billing_cancel_path: str = "/settings?billing=cancelled"
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

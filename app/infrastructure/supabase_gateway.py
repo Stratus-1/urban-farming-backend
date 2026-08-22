@@ -108,6 +108,7 @@ class SupabaseGateway:
         table: str,
         *,
         token: str | None = None,
+        admin: bool = False,
         columns: str = "*",
         filters: dict[str, Any] | None = None,
         order: str | None = None,
@@ -118,7 +119,7 @@ class SupabaseGateway:
         response = await self._request(
             "GET",
             f"/rest/v1/{table}",
-            headers=self._headers(token),
+            headers=self._headers(token, admin=admin),
             params=self._params(columns, filters, order, limit),
         )
         data = response.json()
@@ -130,6 +131,7 @@ class SupabaseGateway:
         payload: dict[str, Any] | list[dict[str, Any]],
         *,
         token: str | None = None,
+        admin: bool = False,
         upsert: bool = False,
         on_conflict: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -141,7 +143,7 @@ class SupabaseGateway:
         response = await self._request(
             "POST",
             f"/rest/v1/{table}",
-            headers=self._headers(token, prefer=prefer),
+            headers=self._headers(token, prefer=prefer, admin=admin),
             params=params,
             json=payload,
         )
@@ -154,12 +156,13 @@ class SupabaseGateway:
         *,
         filters: dict[str, Any],
         token: str | None = None,
+        admin: bool = False,
     ) -> list[dict[str, Any]]:
         ensure_table_allowed(table)
         response = await self._request(
             "PATCH",
             f"/rest/v1/{table}",
-            headers=self._headers(token, prefer="return=representation"),
+            headers=self._headers(token, prefer="return=representation", admin=admin),
             params=self._params("*", filters, None, None),
             json=payload,
         )
@@ -171,21 +174,24 @@ class SupabaseGateway:
         *,
         filters: dict[str, Any],
         token: str | None = None,
+        admin: bool = False,
     ) -> None:
         ensure_table_allowed(table)
         await self._request(
             "DELETE",
             f"/rest/v1/{table}",
-            headers=self._headers(token),
+            headers=self._headers(token, admin=admin),
             params=self._params("*", filters, None, None),
         )
 
-    async def rpc(self, name: str, payload: dict[str, Any], *, token: str | None = None) -> Any:
+    async def rpc(
+        self, name: str, payload: dict[str, Any], *, token: str | None = None, admin: bool = False
+    ) -> Any:
         ensure_rpc_allowed(name)
         response = await self._request(
             "POST",
             f"/rest/v1/rpc/{name}",
-            headers=self._headers(token),
+            headers=self._headers(token, admin=admin),
             json=payload,
         )
         return response.json()

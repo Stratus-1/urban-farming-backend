@@ -6,7 +6,7 @@ from app.schemas.common import APIModel
 
 # "admin" is deliberately absent: it is granted by the handle_new_user() trigger
 # allowlist, never self-assigned at signup.
-SignupRole = Literal["grower", "buyer", "operator", "inspector"]
+SignupRole = Literal["grower", "buyer"]
 
 
 class SignupRequest(APIModel):

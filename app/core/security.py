@@ -52,6 +52,7 @@ async def _supabase_user(
         id=user_id,
         email=payload.get("email"),
         roles=roles,
+        user_metadata=payload.get("user_metadata") or {},
         access_token=token,
     )
 
@@ -66,6 +67,7 @@ async def _native_user(token: str, settings: Settings, gateway: DataGateway) -> 
         id=user_id,
         email=claims.get("email"),
         roles={str(row["role"]) for row in role_rows or []},
+        user_metadata=claims.get("user_metadata") or {},
         access_token=token,
     )
 
@@ -94,6 +96,7 @@ async def _oidc_user(token: str, settings: Settings, gateway: DataGateway) -> Cu
         id=user_id,
         email=claims.get("email"),
         roles={str(row["role"]) for row in role_rows or []},
+        user_metadata=claims.get("user_metadata") or {},
         access_token=token,
     )
 
@@ -113,6 +116,7 @@ async def get_current_user(
         return CurrentUser(
             id=UUID(x_user_id),
             roles=set((x_user_role or "grower").split(",")),
+            user_metadata={},
             access_token="development",
         )
 

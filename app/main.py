@@ -19,6 +19,7 @@ from app.routers import (
     accounts,
     admin,
     auth,
+    billing,
     commerce,
     communications,
     community,
@@ -143,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for router in (
         auth.router,
         accounts.router,
+        billing.router,
         gardens.router,
         inspections.router,
         plans.router,

@@ -11,6 +11,7 @@ class DataGateway(Protocol):
         table: str,
         *,
         token: str | None = None,
+        admin: bool = False,
         columns: str = "*",
         filters: dict[str, Any] | None = None,
         order: str | None = None,
@@ -24,6 +25,7 @@ class DataGateway(Protocol):
         payload: dict[str, Any] | list[dict[str, Any]],
         *,
         token: str | None = None,
+        admin: bool = False,
         upsert: bool = False,
         on_conflict: str | None = None,
     ) -> list[dict[str, Any]]: ...
@@ -35,6 +37,7 @@ class DataGateway(Protocol):
         *,
         filters: dict[str, Any],
         token: str | None = None,
+        admin: bool = False,
     ) -> list[dict[str, Any]]: ...
 
     async def delete(
@@ -43,9 +46,12 @@ class DataGateway(Protocol):
         *,
         filters: dict[str, Any],
         token: str | None = None,
+        admin: bool = False,
     ) -> None: ...
 
-    async def rpc(self, name: str, payload: dict[str, Any], *, token: str | None = None) -> Any: ...
+    async def rpc(
+        self, name: str, payload: dict[str, Any], *, token: str | None = None, admin: bool = False
+    ) -> Any: ...
 
 
 PUBLIC_TABLES = {

@@ -9,6 +9,7 @@ class CurrentUser(BaseModel):
     id: UUID
     email: EmailStr | None = None
     roles: set[str] = Field(default_factory=set)
+    user_metadata: dict[str, Any] = Field(default_factory=dict)
     access_token: str
 
     def has_any_role(self, *roles: str) -> bool:

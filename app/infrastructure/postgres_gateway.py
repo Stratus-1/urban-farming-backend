@@ -206,6 +206,7 @@ class PostgresGateway:
         table: str,
         *,
         token: str | None = None,
+        admin: bool = False,
         columns: str = "*",
         filters: dict[str, Any] | None = None,
         order: str | None = None,
@@ -247,6 +248,7 @@ class PostgresGateway:
         payload: dict[str, Any] | list[dict[str, Any]],
         *,
         token: str | None = None,
+        admin: bool = False,
         upsert: bool = False,
         on_conflict: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -304,6 +306,7 @@ class PostgresGateway:
         *,
         filters: dict[str, Any],
         token: str | None = None,
+        admin: bool = False,
     ) -> list[dict[str, Any]]:
         ensure_table_allowed(table)
         column_types = await self._table_column_types(table)
@@ -332,6 +335,7 @@ class PostgresGateway:
         *,
         filters: dict[str, Any],
         token: str | None = None,
+        admin: bool = False,
     ) -> None:
         ensure_table_allowed(table)
         where_sql, parameters = build_filters(filters)
@@ -343,7 +347,9 @@ class PostgresGateway:
                 text(f"DELETE FROM public.{quote_identifier(table)}{where_sql}"), parameters
             )
 
-    async def rpc(self, name: str, payload: dict[str, Any], *, token: str | None = None) -> Any:
+    async def rpc(
+        self, name: str, payload: dict[str, Any], *, token: str | None = None, admin: bool = False
+    ) -> Any:
         ensure_rpc_allowed(name)
         arguments = ", ".join(f"{quote_identifier(key)} => :{key}" for key in payload)
         async with self.engine.connect() as connection:
