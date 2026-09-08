@@ -8,6 +8,7 @@ from app.core.errors import AppError
 from app.core.security import AdminUserDep, GatewayDep
 from app.infrastructure.email import MailMessage
 from app.schemas.communications import (
+    AssessmentLeadConvert,
     AssessmentLeadCreate,
     AssessmentLeadStatusUpdate,
     ContactMessageCreate,
@@ -129,6 +130,127 @@ async def update_assessment_lead(
     if not rows:
         raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
     return rows[0]
+
+
+@router.post("/admin/assessment-leads/{lead_id}/convert", status_code=201)
+async def convert_assessment_lead(
+    lead_id: UUID,
+    payload: AssessmentLeadConvert,
+    request: Request,
+    gateway: GatewayDep,
+    user: AdminUserDep,
+) -> dict:
+    lead = await gateway.select(
+        "assessment_leads",
+        filters={"id": lead_id},
+        token=user.access_token,
+        admin=True,
+        single=True,
+    )
+    if not lead:
+        raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
+    if lead.get("status") == "converted":
+        raise AppError(
+            409,
+            "assessment_lead_already_converted",
+            "Assessment lead has already been converted",
+        )
+
+    auth_store = getattr(request.app.state, "auth_store", None)
+    if auth_store is None:
+        raise AppError(
+            501,
+            "native_auth_required",
+            "Assessment conversion requires native GCP authentication",
+        )
+
+    existing_user = await auth_store.get_user_by_email(str(lead["email"]))
+    created_user = existing_user is None
+    grower_user = existing_user
+    if grower_user is None:
+        grower_user = await auth_store.create_user(
+            email=str(lead["email"]),
+            password_hash=None,
+            user_metadata={
+                "full_name": lead.get("full_name"),
+                "phone": lead.get("phone"),
+                "source": "assessment_lead",
+                "assessment_lead_id": str(lead_id),
+            },
+            app_metadata={"provider": "assessment_lead"},
+        )
+
+    await auth_store.ensure_provisioned(
+        UUID(str(grower_user["id"])),
+        full_name=str(lead.get("full_name") or ""),
+        role="grower",
+    )
+
+    status = "submitted"
+    city = payload.city or lead.get("city")
+    label = payload.label or _default_garden_request_label(lead)
+    details = {
+        "source": "assessment_lead_conversion",
+        "assessment_lead_id": str(lead_id),
+        "lead_source": lead.get("source"),
+        "lead_status_before_conversion": lead.get("status"),
+        "full_name": lead.get("full_name"),
+        "email": lead.get("email"),
+        "phone": lead.get("phone"),
+        "suburb": lead.get("suburb"),
+        "space_type": lead.get("space_type"),
+        "water_access": lead.get("water_access"),
+        "interest_type": lead.get("interest_type"),
+        "lead_message": lead.get("message"),
+        "converted_by": str(user.id),
+        "converted_at": datetime.now(UTC).isoformat(),
+    }
+    request_rows = await gateway.insert(
+        "garden_requests",
+        {
+            "owner_id": str(grower_user["id"]),
+            "label": label,
+            "city": city,
+            "address": payload.address,
+            "available_space_m2": lead.get("available_space_m2"),
+            "sunlight_hours": lead.get("sunlight_hours"),
+            "details": details,
+            "status": status,
+            "admin_notes": payload.admin_notes or lead.get("admin_notes"),
+            "reviewed_by": str(user.id),
+            "reviewed_at": datetime.now(UTC).isoformat(),
+        },
+        token=user.access_token,
+        admin=True,
+    )
+    garden_request = request_rows[0]
+
+    update_rows = await gateway.update(
+        "assessment_leads",
+        {
+            "status": "converted",
+            "admin_notes": payload.admin_notes or lead.get("admin_notes"),
+            "reviewed_by": str(user.id),
+            "reviewed_at": datetime.now(UTC).isoformat(),
+        },
+        filters={"id": lead_id},
+        token=user.access_token,
+        admin=True,
+    )
+    updated_lead = update_rows[0] if update_rows else lead
+
+    return {
+        "lead": updated_lead,
+        "gardenRequest": garden_request,
+        "userId": str(grower_user["id"]),
+        "createdUser": created_user,
+    }
+
+
+def _default_garden_request_label(lead: dict) -> str:
+    suburb = str(lead.get("suburb") or "Assessment").strip()
+    space_type = str(lead.get("space_type") or "garden").replace("_", " ")
+    return f"{suburb} {space_type} assessment"[:120]
 
 
 @router.post("/notifications/garden-request")

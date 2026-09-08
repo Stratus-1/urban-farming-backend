@@ -53,7 +53,16 @@ class AssessmentLeadCreate(APIModel):
 
 
 class AssessmentLeadStatusUpdate(APIModel):
-    status: Literal["new", "contacted", "scheduled", "assessed", "not_viable", "closed"]
+    status: Literal[
+        "new", "contacted", "scheduled", "assessed", "converted", "not_viable", "closed"
+    ]
+    admin_notes: str | None = Field(default=None, max_length=4000)
+
+
+class AssessmentLeadConvert(APIModel):
+    label: str | None = Field(default=None, max_length=120)
+    address: str | None = Field(default=None, max_length=240)
+    city: str | None = Field(default=None, max_length=120)
     admin_notes: str | None = Field(default=None, max_length=4000)
 
 

@@ -26,6 +26,7 @@ def test_openapi_exposes_migrated_domain_contracts() -> None:
     assert "/api/v1/assessment-leads" in paths
     assert "/api/v1/admin/assessment-leads" in paths
     assert "/api/v1/admin/assessment-leads/{lead_id}" in paths
+    assert "/api/v1/admin/assessment-leads/{lead_id}/convert" in paths
     assert "/api/v1/mobile/push-tokens" in paths
     assert "/api/v1/mobile/notifications/send" in paths
 
