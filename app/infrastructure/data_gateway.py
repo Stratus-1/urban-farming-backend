@@ -65,6 +65,7 @@ PUBLIC_TABLES = {
 }
 
 ALLOWED_TABLES = PUBLIC_TABLES | {
+    "assessment_leads",
     "buyer_profiles",
     "calculator_plans",
     "collections",
@@ -84,6 +85,7 @@ ALLOWED_TABLES = PUBLIC_TABLES | {
     "inspectors",
     "installations",
     "newsletter_subscriptions",
+    "mobile_push_tokens",
     "order_items",
     "orders",
     "profiles",

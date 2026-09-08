@@ -28,6 +28,7 @@ from app.routers import (
     geocoding,
     health,
     inspections,
+    mobile,
     plans,
 )
 
@@ -153,6 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         data.router,
         communications.router,
         geocoding.router,
+        mobile.router,
         admin.router,
     ):
         app.include_router(router, prefix=settings.api_prefix)

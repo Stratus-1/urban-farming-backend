@@ -1,15 +1,21 @@
 import html
+from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Request
 
-from app.core.security import GatewayDep
+from app.core.errors import AppError
+from app.core.security import AdminUserDep, GatewayDep
 from app.infrastructure.email import MailMessage
 from app.schemas.communications import (
+    AssessmentLeadCreate,
+    AssessmentLeadStatusUpdate,
     ContactMessageCreate,
     GardenRequestNotification,
     NewsletterSignup,
     SignupNotification,
 )
+from app.services.mobile_push import send_push_to_audience
 
 router = APIRouter(tags=["communications"])
 
@@ -52,8 +58,83 @@ async def newsletter(payload: NewsletterSignup, gateway: GatewayDep) -> dict:
     return rows[0]
 
 
+@router.post("/assessment-leads", status_code=201)
+async def create_assessment_lead(
+    payload: AssessmentLeadCreate, request: Request, gateway: GatewayDep
+) -> dict:
+    lead_payload = payload.model_dump(mode="json", exclude_none=True)
+    rows = await gateway.insert("assessment_leads", lead_payload, token=None, admin=True)
+    lead = rows[0]
+
+    try:
+        settings = request.app.state.settings
+        email_gateway = request.app.state.email
+        await email_gateway.send(
+            MailMessage(
+                to=settings.admin_email,
+                reply_to=str(payload.email),
+                subject=f"New assessment lead: {payload.suburb}",
+                text=(
+                    f"Lead ID: {lead['id']}\n"
+                    f"Name: {payload.full_name}\n"
+                    f"Email: {payload.email}\n"
+                    f"Phone: {payload.phone or 'Not provided'}\n"
+                    f"Suburb: {payload.suburb}\n"
+                    f"City: {payload.city or 'Not provided'}\n"
+                    f"Space type: {payload.space_type}\n"
+                    f"Available space m2: {payload.available_space_m2 or 'Not provided'}\n"
+                    f"Sunlight hours: {payload.sunlight_hours or 'Not provided'}\n"
+                    f"Water access: {payload.water_access}\n"
+                    f"Interest: {payload.interest_type}\n\n"
+                    f"{payload.message or ''}"
+                ),
+            )
+        )
+    except Exception:
+        pass
+    return lead
+
+
+@router.get("/admin/assessment-leads")
+async def list_assessment_leads(gateway: GatewayDep, user: AdminUserDep) -> dict:
+    rows = await gateway.select(
+        "assessment_leads",
+        token=user.access_token,
+        admin=True,
+        order="created_at.desc",
+        limit=100,
+    )
+    items = rows if isinstance(rows, list) else []
+    return {"items": items, "count": len(items)}
+
+
+@router.patch("/admin/assessment-leads/{lead_id}")
+async def update_assessment_lead(
+    lead_id: UUID,
+    payload: AssessmentLeadStatusUpdate,
+    gateway: GatewayDep,
+    user: AdminUserDep,
+) -> dict:
+    rows = await gateway.update(
+        "assessment_leads",
+        {
+            **payload.model_dump(mode="json", exclude_none=True),
+            "reviewed_by": str(user.id),
+            "reviewed_at": datetime.now(UTC).isoformat(),
+        },
+        filters={"id": lead_id},
+        token=user.access_token,
+        admin=True,
+    )
+    if not rows:
+        raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
+    return rows[0]
+
+
 @router.post("/notifications/garden-request")
-async def garden_request_notification(payload: GardenRequestNotification, request: Request) -> dict:
+async def garden_request_notification(
+    payload: GardenRequestNotification, request: Request, gateway: GatewayDep
+) -> dict:
     email_gateway = request.app.state.email
     settings = request.app.state.settings
     plants = ", ".join(payload.plants) if payload.plants else "Not provided"
@@ -88,11 +169,25 @@ async def garden_request_notification(payload: GardenRequestNotification, reques
             ),
         )
     )
+    try:
+        await send_push_to_audience(
+            settings=settings,
+            gateway=gateway,
+            token="development",
+            title="New garden request",
+            body=f"{payload.garden_name} is ready for review.",
+            roles=["admin", "operator"],
+            data={"type": "garden_request", "request_id": payload.request_id},
+        )
+    except Exception:
+        pass
     return {"ok": True}
 
 
 @router.post("/notifications/signup")
-async def signup_notification(payload: SignupNotification, request: Request) -> dict:
+async def signup_notification(
+    payload: SignupNotification, request: Request, gateway: GatewayDep
+) -> dict:
     await request.app.state.email.send(
         MailMessage(
             to=request.app.state.settings.admin_email,
@@ -104,4 +199,16 @@ async def signup_notification(payload: SignupNotification, request: Request) -> 
             ),
         )
     )
+    try:
+        await send_push_to_audience(
+            settings=request.app.state.settings,
+            gateway=gateway,
+            token="development",
+            title="New signup",
+            body=f"{payload.full_name or payload.email} joined the platform.",
+            roles=["admin", "operator"],
+            data={"type": "signup", "role": payload.role or "grower"},
+        )
+    except Exception:
+        pass
     return {"ok": True}

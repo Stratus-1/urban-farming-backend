@@ -186,7 +186,6 @@ are parsed into an origin list.
 | `REFRESH_TOKEN_TTL_SECONDS` | Optional | Refresh token lifetime; default 2592000 |
 | `GOOGLE_CLIENT_ID` | Google login | Google web OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google login | Google web OAuth client secret for the redirect/callback flow |
-| `GOOGLE_CLIENT_SECRET` | Google login | OAuth client secret for the redirect/callback code exchange |
 | `SUPABASE_URL` | Supabase data/auth | Supabase project URL |
 | `SUPABASE_ANON_KEY` | Supabase data/auth | Public Supabase client key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Selected admin operations | Privileged Supabase key; secret only |
@@ -196,6 +195,7 @@ are parsed into an origin list.
 | `STORAGE_BACKEND` | Always | `gcs` or `supabase` |
 | `GCS_BUCKET` | `STORAGE_BACKEND=gcs` | Upload bucket name |
 | `GCP_PROJECT_ID` | GCP integrations | Google Cloud project ID |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Local Firebase Admin use | Optional service-account path for local FCM sends; Cloud Run should use the attached runtime identity |
 | `SMTP_HOST` | Email enabled | SMTP server |
 | `SMTP_PORT` | Email enabled | STARTTLS port, normally `587` |
 | `SMTP_USER` | Email enabled | SMTP username |
@@ -225,6 +225,8 @@ exchange so the frontend never handles Google ID tokens directly.
 | `POST /api/v1/auth/password-reset` | Send a short-lived password recovery link |
 | `PUT /api/v1/auth/password` | Set a password using an access or recovery token |
 | `GET /api/v1/auth/me` | Return the authenticated user and roles |
+| `POST /api/v1/mobile/push-tokens` | Register or refresh a native device token for Firebase push |
+| `POST /api/v1/mobile/notifications/send` | Send a push notification to selected users or roles |
 
 Protected calls use:
 
@@ -251,6 +253,7 @@ All domain routes are mounted beneath `/api/v1`. Health endpoints are mounted at
 | Orders | `/api/v1/orders` |
 | Community | `/api/v1/community/*`, `/api/v1/green-points` |
 | Plans | `/api/v1/calculator-plans` |
+| Mobile | `POST /api/v1/mobile/push-tokens`, `POST /api/v1/mobile/notifications/send` |
 | Communications | `/api/v1/contact`, `/api/v1/newsletter`, `/api/v1/notifications/*` |
 | Geocoding | `/api/v1/geocoding/search`, `/api/v1/geocoding/reverse` |
 | Compatibility data API | `/api/v1/data/query`, `/api/v1/data/mutate`, `/api/v1/data/rpc` |
