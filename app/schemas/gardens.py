@@ -40,6 +40,27 @@ class GardenAllocationCreate(APIModel):
     allocation_notes: str | None = Field(default=None, max_length=4000)
 
 
+class GardenInstallationComplete(APIModel):
+    install_type: Literal[
+        "raised_bed",
+        "in_ground",
+        "container",
+        "vertical",
+        "greenhouse",
+        "hydroponic",
+        "wicking_bed",
+    ]
+    installed_at: date
+    size_m2: float = Field(gt=0, le=100000)
+    capacity_units: int = Field(gt=0, le=100000)
+    completion_notes: str = Field(min_length=10, max_length=4000)
+    photos: list[str] = Field(min_length=1, max_length=10)
+
+
+class GardenPlantingComplete(APIModel):
+    planted_at: date
+
+
 class CareActionCreate(APIModel):
     installation_id: UUID | None = None
     action_type: Literal["watering", "feeding", "pruning", "inspection", "pest_check"]
