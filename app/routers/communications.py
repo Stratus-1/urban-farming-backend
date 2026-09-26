@@ -83,7 +83,7 @@ async def create_assessment_lead(
                     f"Suburb: {payload.suburb}\n"
                     f"City: {payload.city or 'Not provided'}\n"
                     f"Space type: {payload.space_type}\n"
-                    f"Available space m2: {payload.available_space_m2 or 'Not provided'}\n"
+                    f"Available space m2: {payload.available_space_m2:g}\n"
                     f"Sunlight hours: {payload.sunlight_hours or 'Not provided'}\n"
                     f"Water access: {payload.water_access}\n"
                     f"Interest: {payload.interest_type}\n\n"

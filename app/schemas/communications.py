@@ -37,8 +37,8 @@ class AssessmentLeadCreate(APIModel):
         "community_plot",
         "other",
     ]
-    available_space_m2: float | None = Field(default=None, ge=0, le=100_000)
-    sunlight_hours: float | None = Field(default=None, ge=0, le=24)
+    available_space_m2: float = Field(gt=0, le=100_000)
+    sunlight_hours: float = Field(ge=0, le=24)
     water_access: Literal["none", "limited", "reliable", "unknown"] = "unknown"
     interest_type: Literal[
         "personal_harvest",
