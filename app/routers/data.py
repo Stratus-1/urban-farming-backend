@@ -154,9 +154,37 @@ async def mutate_data(payload: DataMutation, gateway: GatewayDep, user: CurrentU
     if payload.operation == "update":
         if not isinstance(payload.payload, dict):
             raise AppError(422, "invalid_payload", "Update payload must be an object")
+        if payload.table == "garden_requests" and "status" in payload.payload:
+            raise AppError(
+                409,
+                "workflow_transition_required",
+                "Request status changes must use the guarded workflow endpoint.",
+            )
+        if payload.table == "installations" and {"status", "installed_at", "photos"}.intersection(
+            payload.payload
+        ):
+            raise AppError(
+                409,
+                "installation_completion_required",
+                "Installation completion must use the evidence-checked workflow endpoint.",
+            )
         rows = await gateway.update(payload.table, payload.payload, filters=filters, token=token)
     else:
         mutation_payload = payload.payload
+        if payload.table == "installations":
+            rows_to_check = (
+                mutation_payload if isinstance(mutation_payload, list) else [mutation_payload]
+            )
+            if any(
+                row.get("status") == "active" or row.get("installed_at")
+                for row in rows_to_check
+                if isinstance(row, dict)
+            ):
+                raise AppError(
+                    409,
+                    "installation_completion_required",
+                    "Installation completion must use the evidence-checked workflow endpoint.",
+                )
         owner_column = OWNER_COLUMNS.get(payload.table)
         if owner_column and not _is_admin(user):
             source = mutation_payload if isinstance(mutation_payload, list) else [mutation_payload]

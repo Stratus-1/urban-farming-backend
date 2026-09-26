@@ -2,6 +2,7 @@ import html
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Request
 
 from app.core.errors import AppError
@@ -19,6 +20,7 @@ from app.schemas.communications import (
 from app.services.mobile_push import send_push_to_audience
 
 router = APIRouter(tags=["communications"])
+logger = structlog.get_logger(__name__)
 
 
 @router.post("/contact", status_code=201)
@@ -26,23 +28,26 @@ async def contact(payload: ContactMessageCreate, request: Request, gateway: Gate
     rows = await gateway.insert("contact_messages", payload.model_dump(mode="json"), token=None)
     settings = request.app.state.settings
     email = request.app.state.email
-    await email.send(
-        MailMessage(
-            to=settings.admin_email,
-            reply_to=str(payload.email),
-            subject=f"Urban Farming contact: {payload.subject}",
-            text=(
-                f"From: {payload.name} <{payload.email}>\n"
-                f"Category: {payload.category}\n\n{payload.message}"
-            ),
-            html=(
-                f"<p><strong>From:</strong> {html.escape(payload.name)} "
-                f"&lt;{html.escape(str(payload.email))}&gt;</p>"
-                f"<p><strong>Category:</strong> {html.escape(payload.category)}</p>"
-                f"<p>{html.escape(payload.message).replace(chr(10), '<br>')}</p>"
-            ),
+    try:
+        await email.send(
+            MailMessage(
+                to=settings.admin_email,
+                reply_to=str(payload.email),
+                subject=f"Urban Farming contact: {payload.subject}",
+                text=(
+                    f"From: {payload.name} <{payload.email}>\n"
+                    f"Category: {payload.category}\n\n{payload.message}"
+                ),
+                html=(
+                    f"<p><strong>From:</strong> {html.escape(payload.name)} "
+                    f"&lt;{html.escape(str(payload.email))}&gt;</p>"
+                    f"<p><strong>Category:</strong> {html.escape(payload.category)}</p>"
+                    f"<p>{html.escape(payload.message).replace(chr(10), '<br>')}</p>"
+                ),
+            )
         )
-    )
+    except Exception:
+        logger.exception("contact_notification_failed", contact_id=str(rows[0].get("id")))
     return rows[0]
 
 
@@ -92,7 +97,7 @@ async def create_assessment_lead(
             )
         )
     except Exception:
-        pass
+        logger.exception("assessment_lead_notification_failed", lead_id=str(lead.get("id")))
     return lead
 
 

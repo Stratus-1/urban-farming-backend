@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -6,6 +6,7 @@ from app.core.errors import AppError
 from app.infrastructure.data_gateway import DataGateway
 from app.schemas.common import CurrentUser
 from app.schemas.gardens import CareActionCreate, GardenAllocationCreate
+from app.services.workflows import advance_workflow_stage, ready_workflow_stage
 
 ACTION_COPY = {
     "watering": ("Watering recorded", "Water garden", 2),
@@ -143,22 +144,6 @@ async def record_care_action(
     return {"id": activity["id"], "title": title, "nextDueAt": next_due.date().isoformat()}
 
 
-def installation_type(details: dict[str, Any]) -> str:
-    value = f"{details.get('method', '')} {details.get('gardenType', '')}".lower()
-    for needle, result in (
-        ("greenhouse", "greenhouse"),
-        ("aquapon", "aquaponic"),
-        ("hydro", "hydroponic"),
-        ("wicking", "wicking_bed"),
-        ("vertical", "vertical_planter"),
-        ("container", "container_garden"),
-        ("raised", "raised_bed"),
-    ):
-        if needle in value:
-            return result
-    return "soil_bed"
-
-
 async def allocate_garden(
     gateway: DataGateway,
     request_id: UUID,
@@ -173,6 +158,32 @@ async def allocate_garden(
     )
     if not request:
         raise AppError(404, "request_not_found", "Garden request not found")
+    if request.get("status") != "implements_installed":
+        raise AppError(
+            409,
+            "installation_not_complete",
+            "Complete and record the physical installation before allocating crops.",
+        )
+
+    reports = as_list(
+        await gateway.select(
+            "inspection_reports",
+            token=user.access_token,
+            filters={"garden_id": request.get("property_id")},
+            order="submitted_at.desc",
+            limit=1,
+        )
+    )
+    approved_report = next(
+        (report for report in reports if report.get("assessment_status") == "approved"),
+        None,
+    )
+    if not approved_report:
+        raise AppError(
+            409,
+            "inspection_approval_required",
+            "An approved, viable inspector assessment is required before crop allocation.",
+        )
 
     details = request.get("details") if isinstance(request.get("details"), dict) else {}
     allocated = list(
@@ -185,6 +196,15 @@ async def allocate_garden(
     )
     if not crops:
         raise AppError(422, "crops_not_found", "None of the allocated crops exist in the catalog")
+    recommended_crops = set(approved_report.get("recommended_crops") or [])
+    unsupported_crops = [crop["name"] for crop in crops if crop["name"] not in recommended_crops]
+    if unsupported_crops:
+        raise AppError(
+            422,
+            "crop_not_recommended",
+            "Allocate crops recommended by the approved site assessment.",
+            {"unsupportedCrops": unsupported_crops},
+        )
 
     property_id = request.get("property_id")
     property_payload = {
@@ -220,37 +240,19 @@ async def allocate_garden(
             limit=1,
         )
     )
-    if installations:
-        installation = installations[0]
-        if installation.get("status") != "active":
-            await gateway.update(
-                "installations",
-                {"status": "active", "size_m2": request.get("available_space_m2") or 0},
-                filters={"id": installation["id"]},
-                token=user.access_token,
-            )
-    else:
-        rows = await gateway.insert(
-            "installations",
-            {
-                "owner_id": request["owner_id"],
-                "property_id": property_id,
-                "install_type": installation_type(details),
-                "size_m2": request.get("available_space_m2") or 0,
-                "capacity_units": max(12, len(allocated) * 4),
-                "status": "active",
-                "installed_at": date.today().isoformat(),
-                "photos": [],
-            },
-            token=user.access_token,
-        )
-        installation = rows[0]
+    if (
+        not installations
+        or installations[0].get("status") != "active"
+        or not installations[0].get("installed_at")
+    ):
+        raise AppError(409, "installation_not_complete", "No completed installation is recorded.")
+    installation = installations[0]
 
     existing_batches = as_list(
         await gateway.select(
             "crop_batches",
             token=user.access_token,
-            columns="crop_id",
+            columns="id,crop_id",
             filters={"installation_id": installation["id"]},
         )
     )
@@ -262,7 +264,7 @@ async def allocate_garden(
             "crop_id": crop["id"],
             "units": 1,
             "expected_yield_kg": crop.get("est_yield_kg_per_unit") or 0,
-            "status": "growing",
+            "status": "planned",
         }
         for crop in crops
         if str(crop["id"]) not in existing_crop_ids
@@ -277,16 +279,14 @@ async def allocate_garden(
             "allocatedPlants": allocated,
             "inspectionNotes": payload.inspection_notes,
             "allocationNotes": payload.allocation_notes,
-            "trackingState": "tracking",
-            "trackingStartedAt": datetime.now(UTC).isoformat(),
-            "trackingStartedBy": str(user.id),
+            "trackingState": "planned",
         }
     )
     await gateway.update(
         "garden_requests",
         {
             "property_id": property_id,
-            "status": "live",
+            "status": "seeds",
             "reviewed_by": str(user.id),
             "admin_notes": payload.allocation_notes,
             "details": details,
@@ -302,8 +302,11 @@ async def allocate_garden(
                 "property_id": property_id,
                 "installation_id": installation["id"],
                 "activity_type": "inspection",
-                "title": "Site inspected",
-                "details": {"meta": payload.inspection_notes, "points": 20},
+                "title": "Crop allocation recorded",
+                "details": {
+                    "meta": payload.inspection_notes,
+                    "approvedReportId": approved_report["id"],
+                },
             },
             {
                 "owner_id": request["owner_id"],
@@ -311,10 +314,30 @@ async def allocate_garden(
                 "installation_id": installation["id"],
                 "activity_type": "planting",
                 "title": "Crops allocated",
-                "details": {"allocated_plants": allocated, "points": 35},
+                "details": {"allocated_plants": allocated},
             },
         ],
         token=user.access_token,
+    )
+    await advance_workflow_stage(
+        gateway,
+        user,
+        request_id,
+        "crop_allocation",
+        "completed",
+        evidence={
+            "installation_id": str(installation["id"]),
+            "crop_batch_ids": [str(batch["id"]) for batch in existing_batches]
+            + [str(batch.get("id")) for batch in batches if batch.get("id")],
+            "recommended_crops": sorted(recommended_crops),
+        },
+    )
+    await ready_workflow_stage(
+        gateway,
+        user,
+        request_id,
+        "maintenance_tasks",
+        next_action="Plant allocated crops and record the planting date.",
     )
     return {
         "ok": True,
@@ -323,4 +346,5 @@ async def allocate_garden(
         "installationId": str(installation["id"]),
         "allocatedPlants": allocated,
         "matchedPlants": [crop["name"] for crop in crops],
+        "status": "seeds",
     }
