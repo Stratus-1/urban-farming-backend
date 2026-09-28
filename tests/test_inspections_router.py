@@ -22,6 +22,8 @@ class FakeGateway:
             "status": "active",
         }
         self.report = None
+        self.checklist_items: list[dict] = []
+        self.photos: list[dict] = []
         self.insert_calls: list[tuple[str, dict | list[dict]]] = []
         self.update_calls: list[tuple[str, dict, dict]] = []
         self.rpc_calls: list[tuple[str, dict, str | None]] = []
@@ -54,6 +56,10 @@ class FakeGateway:
             if self.report and filters == {"id": self.report["id"]}:
                 return self.report if single else [self.report]
             return None if single else []
+        if table == "inspection_checklist_items":
+            return self.checklist_items
+        if table == "inspection_photos":
+            return self.photos
         raise AssertionError(f"Unexpected select table: {table}")
 
     async def insert(
@@ -173,6 +179,17 @@ async def test_submit_for_approval_persists_assessment_notes_and_gps() -> None:
         "inspector_id": gateway.inspector["id"],
         "assessment_status": "draft",
     }
+    gateway.checklist_items = [
+        {
+            "id": f"00000000-0000-0000-0000-00000000000{index}",
+            "requires_photo": True,
+            "result": "pass",
+        }
+        for index in range(1, 5)
+    ]
+    gateway.photos = [
+        {"checklist_item_id": item["id"]} for item in gateway.checklist_items
+    ]
     result = await submit_for_approval(
         UUID(gateway.report["id"]),
         InspectionAssessment(
@@ -200,3 +217,41 @@ async def test_submit_for_approval_persists_assessment_notes_and_gps() -> None:
     assert report_update["assessment_status"] == "submitted_for_approval"
     assert result["report"]["suitability_band"] == "suitable"
     assert gateway.assignment["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_submit_for_approval_requires_checklist_evidence_photos() -> None:
+    gateway = FakeGateway()
+    gateway.report = {
+        "id": "b76b535f-6b92-4cb8-9b5e-cf9a1c4ab579",
+        "assignment_id": gateway.assignment["id"],
+        "inspector_id": gateway.inspector["id"],
+        "assessment_status": "draft",
+    }
+    gateway.checklist_items = [
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "requires_photo": True,
+            "result": "pass",
+        }
+    ]
+
+    with pytest.raises(AppError) as raised:
+        await submit_for_approval(
+            UUID(gateway.report["id"]),
+            InspectionAssessment(
+                sunlight_hours=7,
+                water_access="reliable",
+                usable_space_m2=12,
+                installation_types=["raised_bed"],
+                recommended_crops=["Spinach"],
+                recommended_infrastructure=["Raised bed"],
+            ),
+            gateway,
+            inspector_user(gateway),
+            None,
+        )
+
+    assert raised.value.status_code == 422
+    assert raised.value.code == "inspection_evidence_incomplete"
+    assert not gateway.update_calls
