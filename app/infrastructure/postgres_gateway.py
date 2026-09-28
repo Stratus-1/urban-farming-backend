@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from typing import Any
 from uuid import UUID
 
@@ -482,6 +482,247 @@ class PostgresGateway:
                     ],
                 )
             return dict(report)
+
+    async def update_garden_request_workflow(
+        self,
+        request_id: UUID,
+        expected_status: str,
+        request_payload: dict[str, Any],
+        actor_id: UUID,
+        stage_updates: list[dict[str, Any]],
+        *,
+        assignment_id: UUID | None = None,
+        report_update: dict[str, Any] | None = None,
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Advance a request and its linked assessment/workflow in one transaction."""
+        column_types = await self._table_column_types("garden_requests")
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            request = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, property_id, status FROM public.garden_requests "
+                            "WHERE id = :request_id FOR UPDATE"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if request is None:
+                raise AppError(404, "request_not_found", "Garden request not found")
+            if request["status"] != expected_status:
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "The request changed while this update was being recorded.",
+                )
+
+            if request_payload.get("status") == "live":
+                property_id = request["property_id"]
+                approved_report = (
+                    (
+                        (
+                            await connection.execute(
+                                text(
+                                    "SELECT id FROM public.inspection_reports "
+                                    "WHERE garden_id = :property_id "
+                                    "AND assessment_status = 'approved' "
+                                    "LIMIT 1 FOR UPDATE"
+                                ),
+                                {"property_id": property_id},
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if property_id
+                    else None
+                )
+                installation = (
+                    (
+                        (
+                            await connection.execute(
+                                text(
+                                    "SELECT id, installed_at FROM public.installations "
+                                    "WHERE property_id = :property_id AND status = 'active' "
+                                    "ORDER BY created_at ASC LIMIT 1 FOR UPDATE"
+                                ),
+                                {"property_id": property_id},
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if property_id
+                    else None
+                )
+                if not approved_report or not installation or not installation["installed_at"]:
+                    raise AppError(
+                        409,
+                        "activation_requirements_missing",
+                        "Finish the approved setup and record planted crops before activation.",
+                    )
+                batches = (
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT status, planted_at FROM public.crop_batches "
+                                "WHERE installation_id = :installation_id FOR UPDATE"
+                            ),
+                            {"installation_id": installation["id"]},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                if not batches:
+                    raise AppError(
+                        409,
+                        "activation_requirements_missing",
+                        "Finish the approved setup and record planted crops before activation.",
+                    )
+                if any(
+                    batch["status"] != "growing" or not batch["planted_at"] for batch in batches
+                ):
+                    raise AppError(
+                        409,
+                        "planting_not_complete",
+                        "Record planting before activating the garden.",
+                    )
+
+            if assignment_id is not None:
+                assignment = (
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT id FROM public.inspection_assignments "
+                                "WHERE id = :assignment_id AND garden_id = :property_id "
+                                "AND status IN ('pending', 'in_progress') FOR UPDATE"
+                            ),
+                            {
+                                "assignment_id": assignment_id,
+                                "property_id": request["property_id"],
+                            },
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if assignment is None:
+                    raise AppError(
+                        409,
+                        "inspector_assignment_required",
+                        "Assign an inspector before scheduling the visit.",
+                    )
+
+            if report_update is not None:
+                notes_assignment = "notes = :notes, " if "notes" in report_update else ""
+                report_result = await connection.execute(
+                    text(
+                        "UPDATE public.inspection_reports SET "
+                        + notes_assignment
+                        + "assessment_status = :status WHERE id = :report_id "
+                        "AND assessment_status = 'submitted_for_approval' RETURNING id"
+                    ),
+                    report_update,
+                )
+                if not report_result.mappings().first():
+                    raise AppError(
+                        409,
+                        "assessment_changed",
+                        "The inspection assessment changed before this decision was saved.",
+                    )
+
+            request_assignments = []
+            request_parameters: dict[str, Any] = {
+                "request_id": request_id,
+                "expected_status": expected_status,
+            }
+            for index, (key, value) in enumerate(request_payload.items()):
+                parameter = f"request_value_{index}"
+                value = coerce_column_value(value, column_types.get(key))
+                expression, bound_value = bind_value(parameter, value)
+                request_assignments.append(f"{quote_identifier(key)} = {expression}")
+                request_parameters[parameter] = bound_value
+            request_result = await connection.execute(
+                text(
+                    "UPDATE public.garden_requests SET "
+                    + ", ".join(request_assignments)
+                    + " WHERE id = :request_id AND status = :expected_status RETURNING *"
+                ),
+                request_parameters,
+            )
+            updated_request = request_result.mappings().first()
+            if not updated_request:
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "The request changed while this update was being recorded.",
+                )
+
+            for stage_update in stage_updates:
+                stage = (
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT stage.id, stage.evidence, stage.started_at, "
+                                "stage.completed_at "
+                                "FROM public.workflow_stages AS stage "
+                                "JOIN public.operational_workflows AS workflow "
+                                "ON workflow.id = stage.workflow_id "
+                                "WHERE workflow.garden_request_id = :request_id "
+                                "AND stage.stage_key = :stage_key FOR UPDATE OF stage"
+                            ),
+                            {"request_id": request_id, "stage_key": stage_update["stage_key"]},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if stage is None:
+                    raise AppError(
+                        409,
+                        "workflow_stage_missing",
+                        f"Workflow stage {stage_update['stage_key']} is missing.",
+                    )
+                prior_evidence = stage["evidence"]
+                evidence = {
+                    **(prior_evidence if isinstance(prior_evidence, dict) else {}),
+                    **stage_update["evidence"],
+                }
+                now = datetime.now(UTC)
+                stage_result = await connection.execute(
+                    text(
+                        "UPDATE public.workflow_stages SET status = :status, "
+                        "owner_user_id = :actor_id, evidence = CAST(:evidence AS jsonb), "
+                        "started_at = COALESCE(started_at, :now), "
+                        "completed_at = CASE WHEN :status IN ('completed', 'rejected') "
+                        "THEN COALESCE(completed_at, :now) ELSE completed_at END, "
+                        "submitted_at = CASE WHEN :status = 'submitted' "
+                        "THEN :now ELSE submitted_at END, "
+                        "next_action = COALESCE(:next_action, next_action) "
+                        "WHERE id = :stage_id RETURNING id"
+                    ),
+                    {
+                        "status": stage_update["status"],
+                        "actor_id": actor_id,
+                        "evidence": json.dumps(evidence),
+                        "now": now,
+                        "next_action": stage_update.get("next_action"),
+                        "stage_id": stage["id"],
+                    },
+                )
+                if not stage_result.mappings().first():
+                    raise AppError(
+                        409,
+                        "workflow_stage_update_failed",
+                        f"Could not advance {stage_update['stage_key']}.",
+                    )
+            return dict(updated_request)
 
     async def complete_garden_installation(
         self,
