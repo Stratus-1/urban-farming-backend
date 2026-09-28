@@ -652,13 +652,21 @@ async def complete_garden_planting(
     gateway: GatewayDep,
     user: AdminUserDep,
 ) -> dict:
+    if payload.planted_at > date.today():
+        raise AppError(422, "invalid_planting_date", "Planting date cannot be in the future.")
+    if isinstance(gateway, PostgresGateway):
+        return await gateway.complete_garden_planting(
+            request_id,
+            payload.planted_at,
+            user.id,
+            token=user.access_token,
+        )
+
     garden_request = await gateway.select(
         "garden_requests", token=user.access_token, filters={"id": request_id}, single=True
     )
     if not garden_request or garden_request.get("status") != "seeds":
         raise AppError(409, "allocation_required", "Allocate crops before recording planting.")
-    if payload.planted_at > date.today():
-        raise AppError(422, "invalid_planting_date", "Planting date cannot be in the future.")
     installations = as_list(
         await gateway.select(
             "installations",

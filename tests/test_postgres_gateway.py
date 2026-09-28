@@ -92,6 +92,11 @@ class _MappingsResult:
     def one(self):
         return self.row
 
+    def all(self):
+        if isinstance(self.row, list):
+            return self.row
+        return [self.row] if self.row is not None else []
+
 
 class _InspectionConnection:
     def __init__(self) -> None:
@@ -179,3 +184,355 @@ async def test_postgres_start_inspection_report_locks_assignment_and_seeds_check
     assert len(checklist_seed) == 2
     assert checklist_seed[0]["category"] == "Garden condition"
     assert checklist_seed[0]["requires_photo"] is True
+
+
+class _GardenPlantingConnection:
+    def __init__(self, status: str = "seeds", workflow_stage: bool = True) -> None:
+        self.status = status
+        self.workflow_stage = workflow_stage
+        self.statements: list[tuple[str, object]] = []
+        self.rollback_requested = False
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append((sql, parameters))
+        if "FROM public.garden_requests" in sql and "FOR UPDATE" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "property_id": UUID("22222222-2222-4222-8222-222222222222"),
+                    "status": self.status,
+                }
+            )
+        if "FROM public.installations" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("33333333-3333-4333-8333-333333333333"),
+                    "installed_at": date(2026, 9, 20),
+                }
+            )
+        if "FROM public.crop_batches" in sql:
+            return _MappingsResult(
+                [
+                    {"id": UUID("44444444-4444-4444-8444-444444444444"), "status": "planned"},
+                    {"id": UUID("55555555-5555-4555-8555-555555555555"), "status": "planned"},
+                ]
+            )
+        if "FROM public.workflow_stages" in sql:
+            if not self.workflow_stage:
+                return _MappingsResult()
+            return _MappingsResult(
+                {
+                    "id": UUID("66666666-6666-4666-8666-666666666666"),
+                    "evidence": {"prior": "kept"},
+                    "started_at": None,
+                }
+            )
+        if "UPDATE public.crop_batches" in sql:
+            assert "status IN ('planned', 'growing')" in sql
+            return _MappingsResult(
+                [
+                    {"id": UUID("44444444-4444-4444-8444-444444444444")},
+                    {"id": UUID("55555555-5555-4555-8555-555555555555")},
+                ]
+            )
+        if "UPDATE public.garden_requests" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "status": "final_install",
+                }
+            )
+        if "UPDATE public.workflow_stages" in sql:
+            return _MappingsResult({"id": UUID("66666666-6666-4666-8666-666666666666")})
+        return _MappingsResult()
+
+
+class _GardenPlantingEngine(_InspectionEngine):
+    def begin(self):
+        return _GardenPlantingTransaction(self.connection)
+
+
+class _GardenPlantingTransaction(_InspectionTransaction):
+    async def __aexit__(self, exc_type, _value, _traceback):
+        self.connection.rollback_requested = exc_type is not None
+        return False
+
+
+class _GardenAllocationConnection(_GardenPlantingConnection):
+    def __init__(self, status: str = "implements_installed", workflow_stages: bool = True) -> None:
+        super().__init__(status=status, workflow_stage=workflow_stages)
+        self.crop_id = UUID("88888888-8888-4888-8888-888888888888")
+        self.existing_crop_id = UUID("99999999-9999-4999-8999-999999999999")
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append((sql, parameters))
+        if "FROM public.garden_requests" in sql and "FOR UPDATE" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "owner_id": UUID("77777777-7777-4777-8777-777777777777"),
+                    "property_id": UUID("22222222-2222-4222-8222-222222222222"),
+                    "status": self.status,
+                    "details": {"request": "preserved"},
+                }
+            )
+        if "FROM public.inspection_reports" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                    "recommended_crops": ["Lettuce", "Spinach"],
+                }
+            )
+        if "UPDATE public.properties" in sql:
+            return _MappingsResult({"id": UUID("22222222-2222-4222-8222-222222222222")})
+        if "FROM public.installations" in sql:
+            return _MappingsResult({"id": UUID("33333333-3333-4333-8333-333333333333")})
+        if "FROM public.crop_batches" in sql:
+            return _MappingsResult(
+                [
+                    {
+                        "id": self.existing_crop_id,
+                        "crop_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                    }
+                ]
+            )
+        if "INSERT INTO public.crop_batches" in sql:
+            return _MappingsResult({"id": UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")})
+        if "UPDATE public.garden_requests" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "status": "seeds",
+                }
+            )
+        if "FROM public.workflow_stages" in sql:
+            if not self.workflow_stage:
+                return _MappingsResult([])
+            return _MappingsResult(
+                [
+                    {
+                        "id": UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+                        "stage_key": "crop_allocation",
+                        "evidence": {},
+                        "started_at": None,
+                    },
+                    {
+                        "id": UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+                        "stage_key": "maintenance_tasks",
+                        "evidence": {"existing": True},
+                        "started_at": None,
+                    },
+                ]
+            )
+        if "UPDATE public.workflow_stages" in sql:
+            return _MappingsResult({"id": parameters["stage_id"]})
+        return _MappingsResult()
+
+
+class _GardenAllocationEngine(_GardenPlantingEngine):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_postgres_planting_locks_and_advances_batches_request_and_workflow() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenPlantingConnection()
+    gateway.engine = _GardenPlantingEngine(connection)
+
+    request = await gateway.complete_garden_planting(
+        request_id=UUID("11111111-1111-4111-8111-111111111111"),
+        planted_at=date(2026, 9, 28),
+        actor_id=UUID("77777777-7777-4777-8777-777777777777"),
+        token="admin-token",
+    )
+
+    request_lock = next(
+        sql for sql, _params in connection.statements if "FROM public.garden_requests" in sql
+    )
+    batch_lock = next(
+        sql for sql, _params in connection.statements if "FROM public.crop_batches" in sql
+    )
+    batch_update_index = next(
+        i
+        for i, (sql, _params) in enumerate(connection.statements)
+        if "UPDATE public.crop_batches" in sql
+    )
+    request_update_index = next(
+        i
+        for i, (sql, _params) in enumerate(connection.statements)
+        if "UPDATE public.garden_requests" in sql
+    )
+    stage_update_index = next(
+        i
+        for i, (sql, _params) in enumerate(connection.statements)
+        if "UPDATE public.workflow_stages" in sql
+    )
+
+    assert "FOR UPDATE" in request_lock
+    assert "FOR UPDATE" in batch_lock
+    assert request["status"] == "final_install"
+    assert batch_update_index < request_update_index < stage_update_index
+    stage_update = connection.statements[stage_update_index][1]
+    assert stage_update["evidence"] == (
+        '{"prior": "kept", "planted_at": "2026-09-28", '
+        '"crop_batch_ids": ["44444444-4444-4444-8444-444444444444", '
+        '"55555555-5555-4555-8555-555555555555"]}'
+    )
+
+
+@pytest.mark.asyncio
+async def test_postgres_planting_rejects_stale_request_before_any_write() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenPlantingConnection(status="cancelled")
+    gateway.engine = _GardenPlantingEngine(connection)
+
+    with pytest.raises(AppError) as raised:
+        await gateway.complete_garden_planting(
+            request_id=UUID("11111111-1111-4111-8111-111111111111"),
+            planted_at=date(2026, 9, 28),
+            actor_id=UUID("77777777-7777-4777-8777-777777777777"),
+            token="admin-token",
+        )
+
+    assert raised.value.code == "allocation_required"
+    assert not any(sql.lstrip().startswith("UPDATE") for sql, _params in connection.statements)
+
+
+@pytest.mark.asyncio
+async def test_postgres_planting_requires_workflow_stage_before_any_write() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenPlantingConnection(workflow_stage=False)
+    gateway.engine = _GardenPlantingEngine(connection)
+
+    with pytest.raises(AppError) as raised:
+        await gateway.complete_garden_planting(
+            request_id=UUID("11111111-1111-4111-8111-111111111111"),
+            planted_at=date(2026, 9, 28),
+            actor_id=UUID("77777777-7777-4777-8777-777777777777"),
+            token="admin-token",
+        )
+
+    assert raised.value.code == "workflow_stage_missing"
+    assert not any(sql.lstrip().startswith("UPDATE") for sql, _params in connection.statements)
+
+
+@pytest.mark.asyncio
+async def test_postgres_allocation_commits_property_batches_request_and_workflow_together() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenAllocationConnection()
+    gateway.engine = _GardenAllocationEngine(connection)
+    property_id = UUID("22222222-2222-4222-8222-222222222222")
+    request_id = UUID("11111111-1111-4111-8111-111111111111")
+    crop_rows = [
+        {
+            "id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            "name": "Lettuce",
+            "est_yield_kg_per_unit": 2.5,
+        },
+        {
+            "id": connection.crop_id,
+            "name": "Spinach",
+            "est_yield_kg_per_unit": 1.2,
+        },
+    ]
+
+    result = await gateway.complete_garden_allocation(
+        request_id=request_id,
+        expected_property_id=property_id,
+        property_payload={
+            "label": "Garden",
+            "address": "Street",
+            "city": "Cape Town",
+            "lat": -34.0,
+            "lng": 18.5,
+            "available_space_m2": 8.0,
+            "sunlight_hours": 6.0,
+            "notes": "Install notes",
+        },
+        approved_report_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        crop_rows=crop_rows,
+        detail_updates={
+            "requestedPlants": ["Lettuce"],
+            "allocatedPlants": ["Lettuce", "Spinach"],
+            "inspectionNotes": "Good site",
+            "allocationNotes": "Plant two crops",
+            "trackingState": "planned",
+        },
+        admin_notes="Plant two crops",
+        actor_id=UUID("77777777-7777-4777-8777-777777777777"),
+        token="admin-token",
+    )
+
+    sql_statements = [sql for sql, _params in connection.statements]
+    inserted_batches = [sql for sql in sql_statements if "INSERT INTO public.crop_batches" in sql]
+    activity_inserts = [
+        sql for sql in sql_statements if "INSERT INTO public.garden_activity_logs" in sql
+    ]
+    workflow_updates = [
+        params["status"]
+        for sql, params in connection.statements
+        if "UPDATE public.workflow_stages" in sql
+    ]
+
+    assert "FOR UPDATE" in next(
+        sql for sql in sql_statements if "FROM public.garden_requests" in sql
+    )
+    assert "FOR UPDATE" in next(
+        sql for sql in sql_statements if "FROM public.installations" in sql
+    )
+    assert len(inserted_batches) == 1
+    assert len(activity_inserts) == 2
+    assert workflow_updates == ["completed", "ready"]
+    assert result["status"] == "seeds"
+    assert result["matchedPlants"] == ["Lettuce", "Spinach"]
+    assert connection.rollback_requested is False
+
+
+@pytest.mark.asyncio
+async def test_postgres_allocation_rolls_back_if_workflow_stage_is_missing() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenAllocationConnection(workflow_stages=False)
+    gateway.engine = _GardenAllocationEngine(connection)
+
+    with pytest.raises(AppError) as raised:
+        await gateway.complete_garden_allocation(
+            request_id=UUID("11111111-1111-4111-8111-111111111111"),
+            expected_property_id=UUID("22222222-2222-4222-8222-222222222222"),
+            property_payload={
+                "label": "Garden",
+                "address": None,
+                "city": None,
+                "lat": None,
+                "lng": None,
+                "available_space_m2": 8.0,
+                "sunlight_hours": 6.0,
+                "notes": None,
+            },
+            approved_report_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            crop_rows=[
+                {
+                    "id": connection.crop_id,
+                    "name": "Spinach",
+                    "est_yield_kg_per_unit": 1.2,
+                }
+            ],
+            detail_updates={"allocatedPlants": ["Spinach"]},
+            admin_notes=None,
+            actor_id=UUID("77777777-7777-4777-8777-777777777777"),
+            token="admin-token",
+        )
+
+    assert raised.value.code == "workflow_stage_missing"
+    assert connection.rollback_requested is True

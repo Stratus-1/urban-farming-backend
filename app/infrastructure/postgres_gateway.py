@@ -592,3 +592,487 @@ class PostgresGateway:
                 .one()
             )
             return dict(updated_request), dict(installation)
+
+    async def complete_garden_planting(
+        self,
+        request_id: UUID,
+        planted_at: date,
+        actor_id: UUID,
+        *,
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Record planting and advance the request/workflow atomically."""
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            request = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, property_id, status FROM public.garden_requests "
+                            "WHERE id = :request_id FOR UPDATE"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if request is None:
+                raise AppError(404, "request_not_found", "Garden request not found")
+            if request["status"] != "seeds":
+                raise AppError(
+                    409,
+                    "allocation_required",
+                    "Allocate crops before recording planting.",
+                )
+            if request["property_id"] is None:
+                raise AppError(
+                    409, "property_required", "A property must be linked before planting."
+                )
+
+            installation = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, installed_at FROM public.installations "
+                            "WHERE property_id = :property_id AND status = 'active' "
+                            "ORDER BY created_at ASC LIMIT 1 FOR UPDATE"
+                        ),
+                        {"property_id": request["property_id"]},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if installation is None or installation["installed_at"] is None:
+                raise AppError(
+                    409,
+                    "installation_not_complete",
+                    "A completed physical installation is required.",
+                )
+
+            batches = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, status FROM public.crop_batches "
+                            "WHERE installation_id = :installation_id FOR UPDATE"
+                        ),
+                        {"installation_id": installation["id"]},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not batches:
+                raise AppError(
+                    409,
+                    "crop_allocation_required",
+                    "Allocate at least one crop before planting.",
+                )
+            if any(batch["status"] not in {"planned", "growing"} for batch in batches):
+                raise AppError(
+                    409,
+                    "crop_batch_state_invalid",
+                    "Only planned crop batches can be planted.",
+                )
+
+            workflow_stage = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT stage.id, stage.evidence, stage.started_at "
+                            "FROM public.workflow_stages AS stage "
+                            "INNER JOIN public.operational_workflows AS workflow "
+                            "ON workflow.id = stage.workflow_id "
+                            "WHERE workflow.garden_request_id = :request_id "
+                            "AND stage.stage_key = 'maintenance_tasks' FOR UPDATE OF stage"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if workflow_stage is None:
+                raise AppError(
+                    409,
+                    "workflow_stage_missing",
+                    "Workflow stage maintenance_tasks is missing.",
+                )
+
+            batch_ids = [str(batch["id"]) for batch in batches]
+            updated_batches = (
+                await connection.execute(
+                    text(
+                        "UPDATE public.crop_batches SET status = 'growing', "
+                        "planted_at = :planted_at "
+                        "WHERE installation_id = :installation_id "
+                        "AND status IN ('planned', 'growing') RETURNING id"
+                    ),
+                    {"planted_at": planted_at, "installation_id": installation["id"]},
+                )
+            ).mappings().all()
+            if len(updated_batches) != len(batches):
+                raise AppError(
+                    409,
+                    "crop_batch_state_changed",
+                    "Crop batches changed while planting was being recorded. "
+                    "Refresh and try again.",
+                )
+
+            updated_request = (
+                (
+                    await connection.execute(
+                        text(
+                            "UPDATE public.garden_requests SET status = 'final_install' "
+                            "WHERE id = :request_id AND status = 'seeds' RETURNING *"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if updated_request is None:
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "The request changed while planting was being recorded.",
+                )
+
+            prior_evidence = workflow_stage["evidence"]
+            evidence = {
+                **(prior_evidence if isinstance(prior_evidence, dict) else {}),
+                "planted_at": planted_at.isoformat(),
+                "crop_batch_ids": batch_ids,
+            }
+            updated_stage = await connection.execute(
+                text(
+                    "UPDATE public.workflow_stages SET status = 'in_progress', "
+                    "owner_user_id = :actor_id, evidence = CAST(:evidence AS jsonb), "
+                    "started_at = COALESCE(started_at, now()), updated_at = now() "
+                    "WHERE id = :stage_id RETURNING id"
+                ),
+                {
+                    "actor_id": actor_id,
+                    "evidence": json.dumps(evidence),
+                    "stage_id": workflow_stage["id"],
+                },
+            )
+            if not updated_stage.mappings().first():
+                raise AppError(
+                    409,
+                    "workflow_stage_update_failed",
+                    "Could not advance maintenance_tasks.",
+                )
+            return dict(updated_request)
+
+    async def complete_garden_allocation(
+        self,
+        request_id: UUID,
+        expected_property_id: UUID,
+        property_payload: dict[str, Any],
+        approved_report_id: UUID,
+        crop_rows: list[dict[str, Any]],
+        detail_updates: dict[str, Any],
+        admin_notes: str | None,
+        actor_id: UUID,
+        *,
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Allocate recommended crops and advance both workflow stages atomically."""
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            request = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, owner_id, property_id, status, details "
+                            "FROM public.garden_requests WHERE id = :request_id FOR UPDATE"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if request is None:
+                raise AppError(404, "request_not_found", "Garden request not found")
+            if (
+                request["status"] != "implements_installed"
+                or request["property_id"] != expected_property_id
+            ):
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "Complete installation before allocating crops. Refresh and try again.",
+                )
+
+            report = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, recommended_crops FROM public.inspection_reports "
+                            "WHERE id = :report_id AND garden_id = :property_id "
+                            "AND assessment_status = 'approved' FOR UPDATE"
+                        ),
+                        {"report_id": approved_report_id, "property_id": expected_property_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if report is None:
+                raise AppError(
+                    409,
+                    "inspection_approval_required",
+                    "An approved, viable inspector assessment is required before crop allocation.",
+                )
+            recommended_crops = set(report["recommended_crops"] or [])
+            unsupported_crops = [
+                crop["name"] for crop in crop_rows if crop["name"] not in recommended_crops
+            ]
+            if unsupported_crops:
+                raise AppError(
+                    422,
+                    "crop_not_recommended",
+                    "Allocate crops recommended by the approved site assessment.",
+                    {"unsupportedCrops": unsupported_crops},
+                )
+
+            property_result = await connection.execute(
+                text(
+                    "UPDATE public.properties SET label = :label, address = :address, "
+                    "city = :city, lat = :lat, lng = :lng, "
+                    "available_space_m2 = :available_space_m2, "
+                    "sunlight_hours = :sunlight_hours, notes = :notes "
+                    "WHERE id = :property_id AND owner_id = :owner_id RETURNING id"
+                ),
+                {
+                    **property_payload,
+                    "property_id": expected_property_id,
+                    "owner_id": request["owner_id"],
+                },
+            )
+            if not property_result.mappings().first():
+                raise AppError(
+                    409, "property_changed", "The linked property could not be updated."
+                )
+
+            installation = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id FROM public.installations "
+                            "WHERE property_id = :property_id AND status = 'active' "
+                            "AND installed_at IS NOT NULL ORDER BY created_at ASC "
+                            "LIMIT 1 FOR UPDATE"
+                        ),
+                        {"property_id": expected_property_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if installation is None:
+                raise AppError(
+                    409, "installation_not_complete", "No completed installation is recorded."
+                )
+
+            existing_batches = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, crop_id FROM public.crop_batches "
+                            "WHERE installation_id = :installation_id FOR UPDATE"
+                        ),
+                        {"installation_id": installation["id"]},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing_crop_ids = {str(batch["crop_id"]) for batch in existing_batches}
+            batch_ids = [str(batch["id"]) for batch in existing_batches]
+            for crop in crop_rows:
+                if str(crop["id"]) in existing_crop_ids:
+                    continue
+                inserted = (
+                    (
+                        await connection.execute(
+                            text(
+                                "INSERT INTO public.crop_batches "
+                                "(owner_id, installation_id, crop_id, units, "
+                                "expected_yield_kg, status) VALUES "
+                                "(:owner_id, :installation_id, :crop_id, 1, "
+                                ":expected_yield_kg, 'planned') RETURNING id"
+                            ),
+                            {
+                                "owner_id": request["owner_id"],
+                                "installation_id": installation["id"],
+                                "crop_id": crop["id"],
+                                "expected_yield_kg": crop.get("est_yield_kg_per_unit") or 0,
+                            },
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if inserted is None:
+                    raise AppError(409, "crop_allocation_failed", "Could not allocate a crop.")
+                existing_crop_ids.add(str(crop["id"]))
+                batch_ids.append(str(inserted["id"]))
+
+            request_details = request["details"]
+            merged_details = {
+                **(request_details if isinstance(request_details, dict) else {}),
+                **detail_updates,
+            }
+            if not merged_details.get("requestedPlants"):
+                merged_details["requestedPlants"] = merged_details.get("plants") or []
+            updated_request = (
+                (
+                    await connection.execute(
+                        text(
+                            "UPDATE public.garden_requests SET property_id = :property_id, "
+                            "status = 'seeds', reviewed_by = :actor_id, reviewed_at = now(), "
+                            "admin_notes = :admin_notes, details = CAST(:details AS jsonb) "
+                            "WHERE id = :request_id AND status = 'implements_installed' "
+                            "RETURNING *"
+                        ),
+                        {
+                            "property_id": expected_property_id,
+                            "actor_id": actor_id,
+                            "admin_notes": admin_notes,
+                            "details": json.dumps(merged_details),
+                            "request_id": request_id,
+                        },
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if updated_request is None:
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "The request changed while crop allocation was being recorded.",
+                )
+
+            activity_rows = (
+                {
+                    "activity_type": "inspection",
+                    "title": "Crop allocation recorded",
+                    "details": {
+                        "meta": detail_updates.get("inspectionNotes"),
+                        "approvedReportId": str(report["id"]),
+                    },
+                },
+                {
+                    "activity_type": "planting",
+                    "title": "Crops allocated",
+                    "details": {"allocated_plants": detail_updates.get("allocatedPlants", [])},
+                },
+            )
+            for activity in activity_rows:
+                await connection.execute(
+                    text(
+                        "INSERT INTO public.garden_activity_logs "
+                        "(owner_id, property_id, installation_id, activity_type, title, details) "
+                        "VALUES (:owner_id, :property_id, :installation_id, :activity_type, "
+                        ":title, CAST(:details AS jsonb))"
+                    ),
+                    {
+                        "owner_id": request["owner_id"],
+                        "property_id": expected_property_id,
+                        "installation_id": installation["id"],
+                        **activity,
+                        "details": json.dumps(activity["details"]),
+                    },
+                )
+
+            stages = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT stage.id, stage.stage_key, stage.evidence, stage.started_at "
+                            "FROM public.workflow_stages AS stage "
+                            "INNER JOIN public.operational_workflows AS workflow "
+                            "ON workflow.id = stage.workflow_id "
+                            "WHERE workflow.garden_request_id = :request_id "
+                            "AND stage.stage_key IN ('crop_allocation', 'maintenance_tasks') "
+                            "FOR UPDATE OF stage"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            stage_by_key = {stage["stage_key"]: stage for stage in stages}
+            for stage_key in ("crop_allocation", "maintenance_tasks"):
+                if stage_key not in stage_by_key:
+                    raise AppError(
+                        409,
+                        "workflow_stage_missing",
+                        f"Workflow stage {stage_key} is missing.",
+                    )
+
+            crop_stage = stage_by_key["crop_allocation"]
+            crop_evidence = {
+                **(crop_stage["evidence"] if isinstance(crop_stage["evidence"], dict) else {}),
+                "installation_id": str(installation["id"]),
+                "crop_batch_ids": batch_ids,
+                "recommended_crops": sorted(recommended_crops),
+            }
+            maintenance_stage = stage_by_key["maintenance_tasks"]
+            maintenance_evidence = (
+                maintenance_stage["evidence"]
+                if isinstance(maintenance_stage["evidence"], dict)
+                else {}
+            )
+            for stage, status, evidence, action in (
+                (crop_stage, "completed", crop_evidence, None),
+                (
+                    maintenance_stage,
+                    "ready",
+                    maintenance_evidence,
+                    "Plant allocated crops and record the planting date.",
+                ),
+            ):
+                updated_stage = await connection.execute(
+                    text(
+                        "UPDATE public.workflow_stages SET status = :status, "
+                        "owner_user_id = :actor_id, evidence = CAST(:evidence AS jsonb), "
+                        "started_at = COALESCE(started_at, now()), "
+                        "completed_at = CASE WHEN :status = 'completed' "
+                        "THEN now() ELSE completed_at END, "
+                        "next_action = COALESCE(CAST(:next_action AS text), next_action), "
+                        "updated_at = now() "
+                        "WHERE id = :stage_id RETURNING id"
+                    ),
+                    {
+                        "status": status,
+                        "actor_id": actor_id,
+                        "evidence": json.dumps(evidence),
+                        "next_action": action,
+                        "stage_id": stage["id"],
+                    },
+                )
+                if not updated_stage.mappings().first():
+                    raise AppError(
+                        409,
+                        "workflow_stage_update_failed",
+                        f"Could not advance {stage['stage_key']}.",
+                    )
+
+            return {
+                "ok": True,
+                "requestId": str(request_id),
+                "propertyId": str(expected_property_id),
+                "installationId": str(installation["id"]),
+                "allocatedPlants": detail_updates.get("allocatedPlants", []),
+                "matchedPlants": [crop["name"] for crop in crop_rows],
+                "status": "seeds",
+            }

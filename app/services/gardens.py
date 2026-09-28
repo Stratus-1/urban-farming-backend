@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.core.errors import AppError
 from app.infrastructure.data_gateway import DataGateway
+from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.common import CurrentUser
 from app.schemas.gardens import CareActionCreate, GardenAllocationCreate
 from app.services.workflows import advance_workflow_stage, ready_workflow_stage
@@ -218,6 +219,31 @@ async def allocate_garden(
         "sunlight_hours": request.get("sunlight_hours"),
         "notes": payload.allocation_notes or payload.inspection_notes or request.get("admin_notes"),
     }
+    if isinstance(gateway, PostgresGateway):
+        if not property_id:
+            raise AppError(
+                409,
+                "property_required",
+                "A property must be linked before crop allocation.",
+            )
+        detail_updates = {
+            "allocatedPlants": allocated,
+            "inspectionNotes": payload.inspection_notes,
+            "allocationNotes": payload.allocation_notes,
+            "trackingState": "planned",
+        }
+        return await gateway.complete_garden_allocation(
+            request_id=request_id,
+            expected_property_id=UUID(str(property_id)),
+            property_payload=property_payload,
+            approved_report_id=UUID(str(approved_report["id"])),
+            crop_rows=crops,
+            detail_updates=detail_updates,
+            admin_notes=payload.allocation_notes,
+            actor_id=user.id,
+            token=user.access_token,
+        )
+
     if property_id:
         await gateway.update(
             "properties",
