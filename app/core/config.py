@@ -1,5 +1,7 @@
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -106,6 +108,31 @@ class Settings(BaseSettings):
                 )
         if self.environment == "production" and self.auth_mode == "development":
             raise RuntimeError("Development authentication cannot run in production")
+        if self.environment == "production":
+            unsafe_origins = []
+            for origin in self.allowed_origins:
+                parsed_origin = urlsplit(origin)
+                hostname = (parsed_origin.hostname or "").lower()
+                try:
+                    is_loopback = ip_address(hostname).is_loopback
+                except ValueError:
+                    is_loopback = hostname == "localhost" or hostname.endswith(".localhost")
+                if parsed_origin.scheme != "https" or not parsed_origin.netloc or is_loopback:
+                    unsafe_origins.append(origin)
+            if unsafe_origins:
+                raise RuntimeError(
+                    "Production ALLOWED_ORIGINS must contain only public HTTPS origins"
+                )
+            app_url = urlsplit(self.app_base_url)
+            app_origin = f"{app_url.scheme}://{app_url.netloc}"
+            if (
+                app_url.scheme != "https"
+                or not app_url.netloc
+                or app_origin not in self.allowed_origins
+            ):
+                raise RuntimeError(
+                    "Production APP_BASE_URL origin must be included in ALLOWED_ORIGINS"
+                )
 
 
 @lru_cache
