@@ -31,7 +31,7 @@ Record a named approver, decision, and date for each item:
 
 ## Product-side implementation gates
 
-1. Apply `database/supabase_migrations/20260928130000_help_center_tenant_scopes.sql` through the controlled Cloud SQL migration path. Verify table structure and grants from database metadata only; do not inspect request or contact rows for this verification.
+1. Apply `database/supabase_migrations/20260928130000_help_center_tenant_scopes.sql` through the controlled Cloud SQL migration path using a schema-owner identity distinct from the `urban_farming` runtime login. Verify table structure, table owner, and effective privileges from database metadata only. Confirm `urban_farming` can SELECT but cannot INSERT, UPDATE, DELETE, or TRUNCATE; if it owns the table or inherits write privileges, stop and fix the DB role boundary. Do not inspect request or contact rows for this verification.
 2. After privacy and tenant approvals, create a dedicated `SUPPORT_REFERENCE_SECRET` in Secret Manager. Use it only for domain-separated HMAC references; never reuse auth, database, SMTP, or Help Center secrets.
 3. Provision only the exact approved `(tenant_scope_ref, owner_id)` mappings through the restricted database-owner process. The product runtime role must retain SELECT-only access; no wildcard or product-wide mapping.
 4. After security approval, configure the exact caller email and production Cloud Run audience on the product API and authorize only that dedicated principal to invoke it. Confirm the central service uses the dedicated identity for this source.
@@ -43,5 +43,5 @@ Record a named approver, decision, and date for each item:
 - Product backend revision observed: `urban-farming-backend-prod-00018-7sn` at 100% traffic.
 - Product service has no `HELP_CENTER_*` or `SUPPORT_*` environment settings; an unauthenticated placeholder-scope request returns HTTP 404.
 - The supplied deployment update reports no product or tenant-scope grants and an unapplied mapping migration.
-- Current ADC cannot read production Cloud SQL metadata because it lacks `cloudsql.instances.get`. No product rows or contact messages were read.
+- Current ADC cannot read production Cloud SQL metadata because it lacks `cloudsql.instances.get`. The documented general bootstrap connects as `urban_farming`, so a distinct schema-owner migration identity must be confirmed for this table before claiming SELECT-only isolation. No product rows or contact messages were read.
 - Therefore the production migration, mapping table, identity configuration, data-purpose approval, and authenticated support behavior remain unverified. Feed stays disabled.
