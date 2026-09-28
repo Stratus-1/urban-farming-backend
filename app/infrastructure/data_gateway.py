@@ -19,6 +19,10 @@ class DataGateway(Protocol):
         single: bool = False,
     ) -> list[dict[str, Any]] | dict[str, Any] | None: ...
 
+    async def select_garden_requests_for_help_center(
+        self, tenant_scope_refs: list[str], *, limit: int
+    ) -> list[dict[str, Any]]: ...
+
     async def insert(
         self,
         table: str,
