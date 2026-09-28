@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -167,6 +168,8 @@ async def update_garden_request_status(
     current = request_row.get("status")
     target = payload.status
     report_to_approve: dict | None = None
+    report_to_reject: dict | None = None
+    schedule_assignment_id: UUID | None = None
     if target == "inspection_scheduled" and current == "submitted":
         assignments = (
             as_list(
@@ -189,6 +192,7 @@ async def update_garden_request_status(
                 "inspector_assignment_required",
                 "Assign an inspector before scheduling the visit.",
             )
+        schedule_assignment_id = UUID(str(assignments[0]["id"]))
     elif target == "accepted" and current == "inspection_scheduled":
         reports = as_list(
             await gateway.select(
@@ -239,12 +243,7 @@ async def update_garden_request_status(
                 None,
             )
             if pending_report:
-                await gateway.update(
-                    "inspection_reports",
-                    {"assessment_status": "rejected"},
-                    filters={"id": pending_report["id"]},
-                    token=user.access_token,
-                )
+                report_to_reject = pending_report
     elif target == "needing_implements" and current == "accepted":
         pass
     elif target == "live" and current == "final_install":
@@ -313,6 +312,15 @@ async def update_garden_request_status(
             "reviewed_at": datetime.now(UTC).isoformat(),
             **({"admin_notes": payload.admin_notes} if payload.admin_notes is not None else {}),
         }
+        if isinstance(gateway, PostgresGateway):
+            return await gateway.update_garden_request_workflow(
+                request_id,
+                current,
+                update_payload,
+                user.id,
+                [],
+                token=user.access_token,
+            )
         rows = await gateway.update(
             "garden_requests",
             update_payload,
@@ -331,13 +339,105 @@ async def update_garden_request_status(
             409, "invalid_request_transition", f"Cannot move a {current} request to {target}."
         )
 
+    request_payload = {
+        **payload.model_dump(exclude_none=True),
+        "reviewed_by": str(user.id),
+        "reviewed_at": datetime.now(UTC).isoformat(),
+    }
+    stage_updates: list[dict[str, Any]] = []
+    if target == "inspection_scheduled":
+        stage_updates = [
+            {
+                "stage_key": "property_details",
+                "status": "completed",
+                "evidence": {
+                    "address": request_row.get("address"),
+                    "property_id": request_row.get("property_id"),
+                },
+            },
+            {
+                "stage_key": "preliminary_assessment",
+                "status": "completed",
+                "evidence": {"result": "manual_review_passed", "reviewed_by": str(user.id)},
+            },
+            {
+                "stage_key": "inspector_visit",
+                "status": "in_progress",
+                "evidence": {"assignment_id": str(schedule_assignment_id)},
+                "next_action": "Complete the site visit and submit the inspection report.",
+            },
+        ]
+    elif target == "accepted":
+        stage_updates = [
+            {
+                "stage_key": "approval",
+                "status": "completed",
+                "evidence": {
+                    "decision": "approved",
+                    "report_id": str(report_to_approve["id"]),
+                    "rationale": payload.admin_notes,
+                },
+            },
+            {
+                "stage_key": "installation",
+                "status": "ready",
+                "evidence": {},
+                "next_action": "Prepare and install the approved garden infrastructure.",
+            },
+        ]
+    elif target == "needing_implements":
+        stage_updates = [
+            {
+                "stage_key": "installation",
+                "status": "in_progress",
+                "evidence": {"work_started_by": str(user.id)},
+            }
+        ]
+    elif target == "rejected":
+        stage_updates = [
+            {
+                "stage_key": "approval",
+                "status": "rejected",
+                "evidence": {"decision": "rejected", "rationale": payload.admin_notes},
+            }
+        ]
+    elif target == "cancelled":
+        stage_updates = [
+            {
+                "stage_key": "approval",
+                "status": "skipped",
+                "evidence": {"decision": "cancelled", "rationale": payload.admin_notes},
+            }
+        ]
+
+    report_update = None
+    if report_to_approve:
+        report_update = {
+            "report_id": report_to_approve["id"],
+            "status": "approved",
+            "notes": payload.admin_notes or report_to_approve.get("notes"),
+        }
+    elif report_to_reject:
+        report_update = {
+            "report_id": report_to_reject["id"],
+            "status": "rejected",
+        }
+
+    if isinstance(gateway, PostgresGateway):
+        return await gateway.update_garden_request_workflow(
+            request_id,
+            current,
+            request_payload,
+            user.id,
+            stage_updates,
+            assignment_id=schedule_assignment_id,
+            report_update=report_update,
+            token=user.access_token,
+        )
+
     rows = await gateway.update(
         "garden_requests",
-        {
-            **payload.model_dump(exclude_none=True),
-            "reviewed_by": str(user.id),
-            "reviewed_at": datetime.now(UTC).isoformat(),
-        },
+        request_payload,
         filters={"id": request_id, "status": current},
         token=user.access_token,
     )
@@ -376,6 +476,13 @@ async def update_garden_request_status(
                 "assessment_approval_failed",
                 "The assessment could not be marked approved. The request status was restored.",
             ) from error
+    elif report_to_reject:
+        await gateway.update(
+            "inspection_reports",
+            {"assessment_status": "rejected"},
+            filters={"id": report_to_reject["id"]},
+            token=user.access_token,
+        )
     if target == "inspection_scheduled":
         await advance_workflow_stage(
             gateway,

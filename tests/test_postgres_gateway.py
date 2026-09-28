@@ -335,6 +335,147 @@ class _GardenAllocationEngine(_GardenPlantingEngine):
     pass
 
 
+class _RequestWorkflowConnection:
+    def __init__(self, status: str = "inspection_scheduled") -> None:
+        self.status = status
+        self.statements: list[tuple[str, dict | None]] = []
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append((sql, parameters))
+        if "SELECT id, property_id, status FROM public.garden_requests" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "property_id": UUID("22222222-2222-4222-8222-222222222222"),
+                    "status": self.status,
+                }
+            )
+        if "UPDATE public.inspection_reports" in sql:
+            return _MappingsResult({"id": parameters["report_id"]})
+        if "UPDATE public.garden_requests SET" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "status": "accepted",
+                }
+            )
+        if "SELECT stage.id, stage.evidence" in sql:
+            stage_id = (
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                if parameters["stage_key"] == "approval"
+                else "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            )
+            return _MappingsResult(
+                {
+                    "id": UUID(stage_id),
+                    "evidence": {"prior": parameters["stage_key"]},
+                    "started_at": None,
+                    "completed_at": None,
+                }
+            )
+        if "UPDATE public.workflow_stages" in sql:
+            return _MappingsResult({"id": parameters["stage_id"]})
+        return _MappingsResult()
+
+
+class _RequestWorkflowEngine(_InspectionEngine):
+    def __init__(self, connection) -> None:
+        super().__init__(connection)
+        self.begin_calls = 0
+
+    def begin(self):
+        self.begin_calls += 1
+        return _InspectionTransaction(self.connection)
+
+
+@pytest.mark.asyncio
+async def test_request_status_report_and_workflow_stages_advance_in_one_transaction() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _RequestWorkflowConnection()
+    engine = _RequestWorkflowEngine(connection)
+    gateway.engine = engine
+    gateway._column_types = {
+        "garden_requests": {
+            "status": "USER-DEFINED",
+            "reviewed_by": "uuid",
+            "reviewed_at": "timestamp with time zone",
+            "admin_notes": "text",
+        }
+    }
+
+    request_id = UUID("11111111-1111-4111-8111-111111111111")
+    report_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+    actor_id = UUID("77777777-7777-4777-8777-777777777777")
+    result = await gateway.update_garden_request_workflow(
+        request_id,
+        "inspection_scheduled",
+        {
+            "status": "accepted",
+            "reviewed_by": str(actor_id),
+            "reviewed_at": "2026-09-28T12:00:00+00:00",
+            "admin_notes": "Site approved after review.",
+        },
+        actor_id,
+        [
+            {
+                "stage_key": "approval",
+                "status": "completed",
+                "evidence": {"decision": "approved", "report_id": str(report_id)},
+            },
+            {
+                "stage_key": "installation",
+                "status": "ready",
+                "evidence": {},
+                "next_action": "Prepare the installation.",
+            },
+        ],
+        report_update={
+            "report_id": report_id,
+            "status": "approved",
+            "notes": "Site approved after review.",
+        },
+        token="admin-token",
+    )
+
+    sql = [statement for statement, _parameters in connection.statements]
+    assert engine.begin_calls == 1
+    assert result["status"] == "accepted"
+    report_update_index = next(
+        index for index, item in enumerate(sql) if "UPDATE public.inspection_reports" in item
+    )
+    request_update_index = next(
+        index for index, item in enumerate(sql) if "UPDATE public.garden_requests SET" in item
+    )
+    assert report_update_index < request_update_index
+    assert sum("UPDATE public.workflow_stages" in item for item in sql) == 2
+
+
+@pytest.mark.asyncio
+async def test_request_workflow_update_rejects_stale_status_before_writes() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _RequestWorkflowConnection(status="submitted")
+    gateway.engine = _RequestWorkflowEngine(connection)
+    gateway._column_types = {"garden_requests": {"status": "USER-DEFINED"}}
+
+    with pytest.raises(AppError) as raised:
+        await gateway.update_garden_request_workflow(
+            UUID("11111111-1111-4111-8111-111111111111"),
+            "inspection_scheduled",
+            {"status": "accepted"},
+            UUID("77777777-7777-4777-8777-777777777777"),
+            [],
+            token="admin-token",
+        )
+
+    assert raised.value.code == "request_changed"
+    assert not any("UPDATE public." in statement for statement, _ in connection.statements)
+
+
 @pytest.mark.asyncio
 async def test_postgres_planting_locks_and_advances_batches_request_and_workflow() -> None:
     from app.infrastructure.postgres_gateway import PostgresGateway
