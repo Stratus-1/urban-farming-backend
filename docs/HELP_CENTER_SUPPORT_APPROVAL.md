@@ -1,6 +1,6 @@
 # Urban Farming support projection approval record
 
-**Status:** Pending owner decisions. This document does not grant access or approve processing.
+**Status:** Product authorization recorded on 2026-09-28. This authorization approves the proposed support purpose, minimized field contract, data handling, connector security design, and no-persistence operating model below. It does not create tenant mappings or authorize wildcard/product-wide access. This record does not claim a separate legal/privacy attestation.
 
 ## Requested purpose
 
@@ -23,11 +23,11 @@ Record a named approver, decision, and date for each item:
 
 | Decision | Required owner | Decision | Approver / date |
 | --- | --- | --- | --- |
-| Confirm this support purpose and the exact lifecycle fields above | Urban Farming product owner | Pending | |
-| Confirm the applicable privacy notice/legal basis, support-agent use, and source retention | Privacy/data owner | Pending | |
-| Approve the dedicated connector principal, token audience, invocation policy, key custody, and rotation procedure | Security/IAM owner | Pending | |
-| Approve each grower-owner scope to be available to the Help Center operators | Product/data owner for that tenant | Pending | |
-| Confirm central read-through, no persistence/cache, and payload-free logging | Help Center service owner | Pending | |
+| Confirm this support purpose and the exact lifecycle fields above | Urban Farming product owner | Approved for implementation | Daniel Mommsen (user authorization in this task), 2026-09-28 |
+| Confirm the applicable privacy notice/legal basis, support-agent use, and source retention | Privacy/data owner | Proposed handling approved; formal privacy/legal owner review not evidenced | Daniel Mommsen (user authorization in this task), 2026-09-28 |
+| Approve the dedicated connector principal, token audience, invocation policy, key custody, and rotation procedure | Security/IAM owner | Least-privilege design approved for implementation; deployed IAM/key controls still require verification | Daniel Mommsen (user authorization in this task), 2026-09-28 |
+| Approve each grower-owner scope to be available to the Help Center operators | Product/data owner for that tenant | No tenant scopes enumerated; none provisioned | Not applicable |
+| Confirm central read-through, no persistence/cache, and payload-free logging | Help Center service owner | Design approved for implementation; deployed behavior still requires verification | Daniel Mommsen (user authorization in this task), 2026-09-28 |
 
 ## Product-side implementation gates
 
@@ -44,4 +44,4 @@ Record a named approver, decision, and date for each item:
 - Product service has no `HELP_CENTER_*` or `SUPPORT_*` environment settings; an unauthenticated placeholder-scope request returns HTTP 404.
 - The supplied deployment update reports no product or tenant-scope grants and an unapplied mapping migration.
 - Current ADC cannot read production Cloud SQL metadata because it lacks `cloudsql.instances.get`. The documented general bootstrap connects as `urban_farming`, so a distinct schema-owner migration identity must be confirmed for this table before claiming SELECT-only isolation. No product rows or contact messages were read.
-- Therefore the production migration, mapping table, identity configuration, data-purpose approval, and authenticated support behavior remain unverified. Feed stays disabled.
+- Product authorization is recorded above. Production migration, mapping-table ownership/effective privileges, dedicated identity/IAM configuration, formal privacy/legal owner review, tenant-specific approvals, and authenticated support behavior remain unverified. No tenant scopes were enumerated, so no mappings were created. Feed stays disabled.
