@@ -12,9 +12,12 @@ psql "${DATABASE_URL_PSQL}" -v ON_ERROR_STOP=1 \
   -f "${ROOT_DIR}/database/cloud_sql/0000_supabase_compatibility.sql"
 
 for migration in "${ROOT_DIR}"/database/supabase_migrations/*.sql; do
+  if [[ "$(basename "${migration}")" == "20260928130000_help_center_tenant_scopes.sql" ]]; then
+    echo "Deferring Help Center tenant-scope migration to the schema-owner procedure."
+    continue
+  fi
   echo "Applying $(basename "${migration}")"
   psql "${DATABASE_URL_PSQL}" -v ON_ERROR_STOP=1 -f "${migration}"
 done
 
 echo "Cloud SQL schema bootstrap complete."
-
