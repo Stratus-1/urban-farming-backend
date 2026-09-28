@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     admin_email: str = "admin@stratsol.co.za"
     geocoding_user_agent: str = "UrbanFarmingPlatform/1.0"
     app_base_url: str = "http://127.0.0.1:8080"
+    help_center_projection_enabled: bool = False
+    help_center_service_account_email: str | None = None
+    help_center_projection_audience: str | None = None
+    support_reference_secret: SecretStr | None = None
     stripe_secret_key: str | None = None
     stripe_publishable_key: str | None = None
     stripe_webhook_secret: str | None = None
