@@ -1,6 +1,6 @@
 # Help Center read-only support projection
 
-**State (2026-09-28):** The current production endpoint is feature-disabled. This branch replaces its in-memory cross-owner filtering with a database join against an exact source-scope mapping table. The migration is not yet applied and no scope mappings exist. The public contact flow remains separate. No production support records have been read or sent to the Help Center.
+**State (2026-09-28):** PR #7 is merged at `76e418b` and deployed in Cloud Run revision `urban-farming-backend-prod-00014-g6q`; the current endpoint is feature-disabled. It applies requested references in a PostgreSQL join against an exact owner-provisioned scope mapping table before garden requests are selected. The mapping migration is not applied and no mappings exist. Public contact remains separate. No production support records have been read or sent to the Help Center.
 
 ## Contract
 
@@ -52,4 +52,4 @@ The response excludes names, email addresses, phone numbers, addresses, city, ga
 
 ## Verification status
 
-Local focused tests cover allowlisted projection fields, status rejection, Google OIDC audience/service-account verification, exact SQL join/filter shape, and a negative two-tenant query simulation proving only requested-scope rows are fetched. They do not exercise Google's live token service, Cloud Run IAM, real Cloud SQL rows, the applied mapping migration, central IAP, browser access or owner-approved data. The feature remains disabled by default.
+All 45 backend tests pass; focused tests cover allowlisted projection fields, status rejection, Google OIDC audience/service-account verification, exact SQL join/filter shape, and a negative two-tenant query simulation proving only requested-scope rows are selected by the query. Ruff, compile, lockfile and diff checks pass. Tests do not exercise Google's live token service, Cloud Run IAM, real Cloud SQL rows, the unapplied mapping migration, central IAP, browser access or owner-approved data. The deployed feature remains disabled by default.
