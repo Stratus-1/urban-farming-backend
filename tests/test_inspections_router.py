@@ -3,9 +3,9 @@ from uuid import UUID
 import pytest
 
 from app.core.errors import AppError
-from app.routers.inspections import start_report
+from app.routers.inspections import start_report, submit_for_approval
 from app.schemas.common import CurrentUser
-from app.schemas.inspections import InspectionStart
+from app.schemas.inspections import InspectionAssessment, InspectionStart
 
 
 class FakeGateway:
@@ -41,6 +41,8 @@ class FakeGateway:
         if table == "inspectors":
             if filters == {"id": self.inspector["id"], "status": "active"}:
                 return self.inspector if single else [self.inspector]
+            if str(filters.get("user_id")) == self.inspector["user_id"]:
+                return self.inspector if single else [self.inspector]
             return None if single else []
         if table == "inspection_assignments":
             if filters == {"id": self.assignment["id"]}:
@@ -49,6 +51,8 @@ class FakeGateway:
         if table == "inspection_reports":
             if filters == {"assignment_id": self.assignment["id"]}:
                 return self.report if single else ([self.report] if self.report else [])
+            if self.report and filters == {"id": self.report["id"]}:
+                return self.report if single else [self.report]
             return None if single else []
         raise AssertionError(f"Unexpected select table: {table}")
 
@@ -86,6 +90,9 @@ class FakeGateway:
         if table == "inspection_assignments":
             self.assignment = {**self.assignment, **payload}
             return [self.assignment]
+        if table == "inspection_reports" and self.report:
+            self.report = {**self.report, **payload}
+            return [self.report]
         raise AssertionError(f"Unexpected update table: {table}")
 
     async def rpc(self, name: str, payload: dict, *, token: str | None = None):
@@ -99,6 +106,15 @@ def admin_user() -> CurrentUser:
         email="admin@urbanfarming.co.za",
         roles={"admin"},
         access_token="admin-token",
+    )
+
+
+def inspector_user(gateway: FakeGateway) -> CurrentUser:
+    return CurrentUser(
+        id=UUID(gateway.inspector["user_id"]),
+        email="inspector@urbanfarming.co.za",
+        roles={"inspector"},
+        access_token="inspector-token",
     )
 
 
@@ -146,3 +162,41 @@ async def test_start_report_requires_preview_inspector_for_admin_without_inspect
 
     assert raised.value.status_code == 400
     assert raised.value.code == "inspector_preview_required"
+
+
+@pytest.mark.asyncio
+async def test_submit_for_approval_persists_assessment_notes_and_gps() -> None:
+    gateway = FakeGateway()
+    gateway.report = {
+        "id": "b76b535f-6b92-4cb8-9b5e-cf9a1c4ab579",
+        "assignment_id": gateway.assignment["id"],
+        "inspector_id": gateway.inspector["id"],
+        "assessment_status": "draft",
+    }
+    result = await submit_for_approval(
+        UUID(gateway.report["id"]),
+        InspectionAssessment(
+            notes="The gate is narrow; use compact raised beds.",
+            gps_lat=-34.0,
+            gps_lng=18.5,
+            sunlight_hours=7,
+            water_access="reliable",
+            usable_space_m2=12,
+            installation_types=["raised_bed"],
+            recommended_crops=["Spinach"],
+            recommended_infrastructure=["Raised bed"],
+        ),
+        gateway,
+        inspector_user(gateway),
+        None,
+    )
+
+    report_update = next(
+        call[1] for call in gateway.update_calls if call[0] == "inspection_reports"
+    )
+    assert report_update["notes"] == "The gate is narrow; use compact raised beds."
+    assert report_update["gps_lat"] == -34.0
+    assert report_update["gps_lng"] == 18.5
+    assert report_update["assessment_status"] == "submitted_for_approval"
+    assert result["report"]["suitability_band"] == "suitable"
+    assert gateway.assignment["status"] == "completed"

@@ -5,6 +5,9 @@ from app.services.inspection_scoring import score_assessment
 def test_score_assessment_is_deterministic_and_explainable():
     result = score_assessment(
         InspectionAssessment(
+            notes="Watering access verified; recommend raised beds.",
+            gps_lat=-34.0,
+            gps_lng=18.5,
             sunlight_hours=7,
             water_access="reliable",
             usable_space_m2=12,
@@ -18,6 +21,9 @@ def test_score_assessment_is_deterministic_and_explainable():
 
     assert result.suitability_score == 95
     assert result.suitability_band == "suitable"
+    assert result.notes == "Watering access verified; recommend raised beds."
+    assert result.gps_lat == -34.0
+    assert result.gps_lng == 18.5
     assert result.score_breakdown == {
         "sunlight": 30,
         "water": 25,

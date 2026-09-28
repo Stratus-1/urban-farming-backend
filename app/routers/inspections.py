@@ -504,6 +504,9 @@ async def save_assessment(
     rows = await gateway.update(
         "inspection_reports",
         {
+            "notes": payload.notes,
+            "gps_lat": payload.gps_lat,
+            "gps_lng": payload.gps_lng,
             "sunlight_hours": scored.sunlight_hours,
             "water_access": scored.water_access,
             "usable_space_m2": scored.usable_space_m2,
@@ -556,6 +559,9 @@ async def submit_for_approval(
     rows = await gateway.update(
         "inspection_reports",
         {
+            "notes": payload.notes,
+            "gps_lat": payload.gps_lat,
+            "gps_lng": payload.gps_lng,
             "sunlight_hours": scored.sunlight_hours,
             "water_access": scored.water_access,
             "usable_space_m2": scored.usable_space_m2,
