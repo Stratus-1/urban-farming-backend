@@ -1,6 +1,6 @@
 # Help Center read-only support projection
 
-**State (2026-09-28):** PR #7 is merged at `76e418b` and deployed in Cloud Run revision `urban-farming-backend-prod-00014-g6q`; the current endpoint is feature-disabled. It applies requested references in a PostgreSQL join against an exact owner-provisioned scope mapping table before garden requests are selected. The mapping migration is not applied and no mappings exist. Public contact remains separate. No production support records have been read or sent to the Help Center.
+**State (2026-09-28):** PR #7 is merged at `76e418b`; the product backend is currently Cloud Run revision `urban-farming-backend-prod-00018-7sn` (100% traffic). A metadata-only production check found no `HELP_CENTER_*` or `SUPPORT_*` service environment settings, and the projection endpoint returned HTTP 404 with a placeholder scope, confirming the feature remains disabled. The supplied Help Center deployment update says the mapping migration is unapplied and no product/tenant grants exist. A direct production schema check was blocked because the available ADC identity lacks `cloudsql.instances.get`; no product rows, mappings, or contact messages were queried. Public contact remains separate.
 
 ## Contract
 
@@ -52,4 +52,6 @@ The response excludes names, email addresses, phone numbers, addresses, city, ga
 
 ## Verification status
 
-All 45 backend tests pass; focused tests cover allowlisted projection fields, status rejection, Google OIDC audience/service-account verification, exact SQL join/filter shape, and a negative two-tenant query simulation proving only requested-scope rows are selected by the query. Ruff, compile, lockfile and diff checks pass. Tests do not exercise Google's live token service, Cloud Run IAM, real Cloud SQL rows, the unapplied mapping migration, central IAP, browser access or owner-approved data. The deployed feature remains disabled by default.
+All 50 backend tests pass; focused tests cover allowlisted projection fields, status rejection, Google OIDC audience/service-account verification, exact SQL join/filter shape, and a negative two-tenant query simulation proving only requested-scope rows are selected by the query. Ruff and diff checks pass. Tests do not exercise Google's live token service, Cloud Run IAM, real Cloud SQL rows, the unapplied mapping migration, central IAP, browser access or owner-approved data. The deployed feature remains disabled by default.
+
+The product-side purpose, field limits, data handling, and named approval gates are captured in `HELP_CENTER_SUPPORT_APPROVAL.md`. That record is a request for owner decisions, not an approval. Do not create tenant mappings, configure a caller identity, grant invocation, or enable the projection until the required decisions are recorded.
