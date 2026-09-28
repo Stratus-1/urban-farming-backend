@@ -56,3 +56,60 @@ def test_allowed_origins_accepts_comma_separated_environment_value() -> None:
         "http://127.0.0.1:8081",
         "https://urban.example.com",
     ]
+
+
+def test_production_rejects_loopback_cors_origins() -> None:
+    settings = Settings(
+        environment="production",
+        auth_mode="native",
+        data_backend="postgres",
+        database_url="postgresql+asyncpg://test:test@localhost/test",
+        jwt_secret="test-secret",
+        app_base_url="https://urban.example.com",
+        allowed_origins="https://urban.example.com,http://localhost:5173",
+    )
+
+    try:
+        settings.validate_runtime()
+    except RuntimeError as error:
+        assert "public HTTPS origins" in str(error)
+    else:
+        raise AssertionError("Production must reject loopback CORS origins")
+
+
+def test_production_requires_app_base_url_to_be_an_allowed_https_origin() -> None:
+    settings = Settings(
+        environment="production",
+        auth_mode="native",
+        data_backend="postgres",
+        database_url="postgresql+asyncpg://test:test@localhost/test",
+        jwt_secret="test-secret",
+        app_base_url="http://urban.example.com",
+        allowed_origins="https://urban.example.com",
+    )
+
+    try:
+        settings.validate_runtime()
+    except RuntimeError as error:
+        assert "APP_BASE_URL origin" in str(error)
+    else:
+        raise AssertionError("Production APP_BASE_URL must use an allowed HTTPS origin")
+
+
+def test_production_rejects_https_localhost_cors_origin() -> None:
+    settings = Settings(
+        environment="production",
+        auth_mode="native",
+        data_backend="postgres",
+        database_url="postgresql+asyncpg://test:test@localhost/test",
+        jwt_secret="test-secret",
+        app_base_url="https://urban.example.com",
+        allowed_origins="https://urban.example.com,https://localhost",
+    )
+
+    try:
+        settings.validate_runtime()
+    except RuntimeError as error:
+        assert "public HTTPS origins" in str(error)
+    else:
+        raise AssertionError("Production must reject a localhost origin even over HTTPS")
