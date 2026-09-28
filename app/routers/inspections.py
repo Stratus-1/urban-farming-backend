@@ -550,6 +550,42 @@ async def submit_for_approval(
             "recommendations_required",
             "Add at least one crop and infrastructure recommendation before submission",
         )
+    checklist_items = as_list(
+        await gateway.select(
+            "inspection_checklist_items",
+            token=user.access_token,
+            filters={"report_id": str(report_id)},
+        )
+    )
+    if not checklist_items:
+        raise AppError(
+            409,
+            "inspection_checklist_missing",
+            "The inspection checklist is not ready. Reopen the inspection and try again.",
+        )
+    required_photo_items = [
+        item for item in checklist_items if item.get("requires_photo") is True
+    ]
+    photos = as_list(
+        await gateway.select(
+            "inspection_photos",
+            token=user.access_token,
+            filters={"report_id": str(report_id)},
+        )
+    )
+    photo_item_ids = {str(photo.get("checklist_item_id")) for photo in photos}
+    incomplete_required = [
+        item
+        for item in required_photo_items
+        if item.get("result") in {None, "na"}
+        or str(item.get("id")) not in photo_item_ids
+    ]
+    if incomplete_required:
+        raise AppError(
+            422,
+            "inspection_evidence_incomplete",
+            "Complete every required inspection item and attach its site photo before submitting.",
+        )
     submitted_at = datetime.now(UTC).isoformat()
     overall_status = {
         "suitable": "pass",
