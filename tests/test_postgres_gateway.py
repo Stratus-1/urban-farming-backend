@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, time
+from uuid import UUID
 
 import pytest
 
@@ -76,3 +77,105 @@ def test_coerce_column_value_rejects_invalid_temporal_values() -> None:
 
     assert raised.value.status_code == 422
     assert raised.value.code == "invalid_temporal_value"
+
+
+class _MappingsResult:
+    def __init__(self, row=None) -> None:
+        self.row = row
+
+    def mappings(self):
+        return self
+
+    def first(self):
+        return self.row
+
+    def one(self):
+        return self.row
+
+
+class _InspectionConnection:
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, object]] = []
+        self.report = None
+        self.checklist_exists = False
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append((sql, parameters))
+        if "FROM public.inspection_assignments" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("226b3f34-1e69-47b0-a691-1932d08001bf"),
+                    "inspector_id": UUID("4caa21df-b050-43af-8f99-9fdf0627aeb0"),
+                    "garden_id": UUID("06ac42e0-c673-4412-9660-272de2f9b9cb"),
+                    "status": "pending",
+                    "started_at": None,
+                }
+            )
+        if "FROM public.inspection_reports" in sql:
+            return _MappingsResult(self.report)
+        if "INSERT INTO public.inspection_reports" in sql:
+            self.report = {
+                "id": UUID("b76b535f-6b92-4cb8-9b5e-cf9a1c4ab579"),
+                "assignment_id": UUID("226b3f34-1e69-47b0-a691-1932d08001bf"),
+                "inspector_id": UUID("4caa21df-b050-43af-8f99-9fdf0627aeb0"),
+                "garden_id": UUID("06ac42e0-c673-4412-9660-272de2f9b9cb"),
+                "overall_status": "pending",
+            }
+            return _MappingsResult(self.report)
+        return _MappingsResult()
+
+    async def scalar(self, _statement, _parameters=None):
+        return self.checklist_exists
+
+
+class _InspectionTransaction:
+    def __init__(self, connection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, _type, _value, _traceback):
+        return False
+
+
+class _InspectionEngine:
+    def __init__(self, connection) -> None:
+        self.connection = connection
+
+    def begin(self):
+        return _InspectionTransaction(self.connection)
+
+
+@pytest.mark.asyncio
+async def test_postgres_start_inspection_report_locks_assignment_and_seeds_checklist() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _InspectionConnection()
+    gateway.engine = _InspectionEngine(connection)
+
+    report = await gateway.start_inspection_report(
+        assignment_id=UUID("226b3f34-1e69-47b0-a691-1932d08001bf"),
+        inspector_id=UUID("4caa21df-b050-43af-8f99-9fdf0627aeb0"),
+        gps_lat=-34.0,
+        gps_lng=18.5,
+        checklist_template=(
+            ("Garden condition", "Full garden view", True, 1),
+            ("Crop health", "Leaf and growth check", True, 2),
+        ),
+        token="inspector-token",
+    )
+
+    assignment_lock = next(sql for sql, _params in connection.statements if "FOR UPDATE" in sql)
+    checklist_seed = next(
+        params
+        for sql, params in connection.statements
+        if "INSERT INTO public.inspection_checklist_items" in sql
+    )
+    assert report["overall_status"] == "pending"
+    assert "inspector_id = :inspector_id" in assignment_lock
+    assert len(checklist_seed) == 2
+    assert checklist_seed[0]["category"] == "Garden condition"
+    assert checklist_seed[0]["requires_photo"] is True

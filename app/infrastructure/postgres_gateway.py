@@ -2,6 +2,7 @@ import json
 import re
 from datetime import date, datetime, time
 from typing import Any
+from uuid import UUID
 
 import jwt
 from sqlalchemy import text
@@ -385,3 +386,101 @@ class PostgresGateway:
                 text(f"SELECT * FROM public.{quote_identifier(name)}({arguments})"), payload
             )
             return [dict(row) for row in result.mappings().all()]
+
+    async def start_inspection_report(
+        self,
+        *,
+        assignment_id: UUID,
+        inspector_id: UUID,
+        gps_lat: float | None,
+        gps_lng: float | None,
+        checklist_template: tuple[tuple[str, str, bool, int], ...],
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Start or resume an assigned inspection atomically in Cloud SQL."""
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            assignment = (
+                await connection.execute(
+                    text(
+                        "SELECT id, inspector_id, garden_id, status, started_at "
+                        "FROM public.inspection_assignments "
+                        "WHERE id = :assignment_id AND inspector_id = :inspector_id "
+                        "FOR UPDATE"
+                    ),
+                    {"assignment_id": assignment_id, "inspector_id": inspector_id},
+                )
+            ).mappings().first()
+            if assignment is None:
+                raise AppError(
+                    404, "inspection_assignment_not_found", "Inspection assignment not found"
+                )
+
+            report = (
+                await connection.execute(
+                    text(
+                        "SELECT * FROM public.inspection_reports "
+                        "WHERE assignment_id = :assignment_id LIMIT 1"
+                    ),
+                    {"assignment_id": assignment_id},
+                )
+            ).mappings().first()
+            if report is None:
+                report = (
+                    await connection.execute(
+                        text(
+                            "INSERT INTO public.inspection_reports "
+                            "(assignment_id, inspector_id, garden_id, overall_status, notes, "
+                            "gps_lat, gps_lng, started_at) "
+                            "VALUES (:assignment_id, :inspector_id, :garden_id, 'pending', "
+                            "NULL, :gps_lat, :gps_lng, now()) RETURNING *"
+                        ),
+                        {
+                            "assignment_id": assignment_id,
+                            "inspector_id": inspector_id,
+                            "garden_id": assignment["garden_id"],
+                            "gps_lat": gps_lat,
+                            "gps_lng": gps_lng,
+                        },
+                    )
+                ).mappings().one()
+
+            await connection.execute(
+                text(
+                    "UPDATE public.inspection_assignments "
+                    "SET status = CASE WHEN status IN ('pending', 'in_progress') "
+                    "THEN 'in_progress' ELSE status END, "
+                    "started_at = COALESCE(started_at, now()), updated_at = now() "
+                    "WHERE id = :assignment_id"
+                ),
+                {"assignment_id": assignment_id},
+            )
+
+            has_checklist = await connection.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM public.inspection_checklist_items "
+                    "WHERE report_id = :report_id)"
+                ),
+                {"report_id": report["id"]},
+            )
+            if not has_checklist:
+                await connection.execute(
+                    text(
+                        "INSERT INTO public.inspection_checklist_items "
+                        "(report_id, category, item_name, result, comment, "
+                        "requires_photo, sort_order) "
+                        "VALUES (:report_id, :category, :item_name, 'na', NULL, "
+                        ":requires_photo, :sort_order)"
+                    ),
+                    [
+                        {
+                            "report_id": report["id"],
+                            "category": category,
+                            "item_name": item_name,
+                            "requires_photo": requires_photo,
+                            "sort_order": sort_order,
+                        }
+                        for category, item_name, requires_photo, sort_order in checklist_template
+                    ],
+                )
+            return dict(report)
