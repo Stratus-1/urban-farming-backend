@@ -151,15 +151,9 @@ async def help_center_garden_request_snapshot(
     ):
         raise HTTPException(status_code=422, detail="Tenant scope reference is invalid")
 
-    rows = await gateway.select(
-        "garden_requests",
-        admin=True,
-        columns="id,owner_id,status,created_at,updated_at",
-        order="updated_at.asc",
-        limit=limit + 1,
+    rows = await gateway.select_garden_requests_for_help_center(
+        tenant_scope_refs, limit=limit + 1
     )
-    if not isinstance(rows, list):
-        raise HTTPException(status_code=503, detail="Support projection source is unavailable")
     if len(rows) > limit:
         raise HTTPException(
             status_code=503,
@@ -170,13 +164,12 @@ async def help_center_garden_request_snapshot(
 
     try:
         requested_scopes = set(tenant_scope_refs)
-        cases = [
-            projection
-            for projection in (
-                project_garden_request_for_help_center(row, secret_value) for row in rows
-            )
-            if projection.tenant_scope_ref in requested_scopes
-        ]
+        cases = []
+        for row in rows:
+            projection = project_garden_request_for_help_center(row, secret_value)
+            if projection.tenant_scope_ref not in requested_scopes:
+                raise ValueError("Source tenant mapping does not match the configured reference")
+            cases.append(projection)
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(
             status_code=503,

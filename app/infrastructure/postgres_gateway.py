@@ -242,6 +242,33 @@ class PostgresGateway:
         data = [dict(row) for row in rows]
         return (data[0] if data else None) if single else data
 
+    async def select_garden_requests_for_help_center(
+        self, tenant_scope_refs: list[str], *, limit: int
+    ) -> list[dict[str, Any]]:
+        """Read only garden requests joined to explicit, pre-approved source tenant scopes."""
+        if not tenant_scope_refs:
+            return []
+        statement = text(
+            """
+            SELECT request.id, request.owner_id, request.status,
+                   request.created_at, request.updated_at
+            FROM public.garden_requests AS request
+            INNER JOIN public.help_center_tenant_scopes AS scope
+              ON scope.owner_id = request.owner_id
+            WHERE scope.tenant_scope_ref = ANY(CAST(:tenant_scope_refs AS text[]))
+            ORDER BY request.updated_at ASC
+            LIMIT :row_limit
+            """
+        )
+        async with self.engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    statement,
+                    {"tenant_scope_refs": tenant_scope_refs, "row_limit": limit},
+                )
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
     async def insert(
         self,
         table: str,

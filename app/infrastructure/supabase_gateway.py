@@ -125,6 +125,15 @@ class SupabaseGateway:
         data = response.json()
         return (data[0] if data else None) if single else data
 
+    async def select_garden_requests_for_help_center(
+        self, tenant_scope_refs: list[str], *, limit: int
+    ) -> list[dict[str, Any]]:
+        raise AppError(
+            503,
+            "support_projection_unavailable",
+            "Tenant-scoped support projections require the PostgreSQL data backend",
+        )
+
     async def insert(
         self,
         table: str,

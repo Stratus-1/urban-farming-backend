@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from app.core.config import Settings
 from app.core.workload_identity import WorkloadIdentityError, _verify
+from app.infrastructure.postgres_gateway import PostgresGateway
 from app.routers.communications import (
     help_center_garden_request_snapshot,
     project_garden_request_for_help_center,
@@ -49,6 +50,65 @@ def test_help_center_projection_rejects_unknown_status() -> None:
     }
     with pytest.raises(ValueError, match="outside the support projection contract"):
         project_garden_request_for_help_center(row, "x" * 32)
+
+
+@pytest.mark.asyncio
+async def test_source_query_filters_tenant_scope_before_fetching_rows() -> None:
+    scope_a = "uf-tenant-" + "a" * 64
+    scope_b = "uf-tenant-" + "b" * 64
+    owner_a = "50c25988-c05f-4071-a9b6-2661b6814c19"
+    owner_b = "60c25988-c05f-4071-a9b6-2661b6814c19"
+    requests = [
+        {"id": "request-a", "owner_id": owner_a},
+        {"id": "request-b", "owner_id": owner_b},
+    ]
+    source_mappings = [
+        {"tenant_scope_ref": scope_a, "owner_id": owner_a},
+        {"tenant_scope_ref": scope_b, "owner_id": owner_b},
+    ]
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def execute(self, statement, parameters):
+            sql = str(statement)
+            assert "INNER JOIN public.help_center_tenant_scopes" in sql
+            assert "scope.owner_id = request.owner_id" in sql
+            assert "scope.tenant_scope_ref = ANY" in sql
+            requested = set(parameters["tenant_scope_refs"])
+            allowed_owners = {
+                mapping["owner_id"]
+                for mapping in source_mappings
+                if mapping["tenant_scope_ref"] in requested
+            }
+            fetched = [row for row in requests if row["owner_id"] in allowed_owners]
+            return Result(fetched)
+
+    class Engine:
+        def connect(self):
+            return Connection()
+
+    gateway = object.__new__(PostgresGateway)
+    gateway.engine = Engine()
+
+    fetched = await gateway.select_garden_requests_for_help_center([scope_a], limit=501)
+
+    assert [row["id"] for row in fetched] == ["request-a"]
+    assert all(row["owner_id"] != owner_b for row in fetched)
 
 
 def test_service_token_verification_requires_the_exact_allowlisted_service(monkeypatch) -> None:

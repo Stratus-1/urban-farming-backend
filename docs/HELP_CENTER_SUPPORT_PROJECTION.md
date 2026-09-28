@@ -1,6 +1,6 @@
 # Help Center read-only support projection
 
-**State (2026-09-28):** Source implementation is local and feature-disabled. The public contact flow is not a source for this feed. No production support records have been read or sent to the Help Center.
+**State (2026-09-28):** The current production endpoint is feature-disabled. This branch replaces its in-memory cross-owner filtering with a database join against an exact source-scope mapping table. The migration is not yet applied and no scope mappings exist. The public contact flow remains separate. No production support records have been read or sent to the Help Center.
 
 ## Contract
 
@@ -9,11 +9,11 @@
 - Method is read-only. The route is feature-gated by `HELP_CENTER_PROJECTION_ENABLED` and requires PostgreSQL plus native authentication mode.
 - Caller must present a Google-issued OIDC ID token in `Authorization: Bearer`. Signature, expiry, exact audience and the configured `HELP_CENTER_SERVICE_ACCOUNT_EMAIL` are verified. Human product tokens are not accepted.
 - The exact expected audience is configured in `HELP_CENTER_PROJECTION_AUDIENCE` and must be the product API Cloud Run URL.
-- Caller must send 1–100 repeated `X-Help-Center-Tenant-Scope` headers. Invalid or missing scopes are rejected. The product returns only matching opaque tenant scopes.
+- Caller must send 1–100 repeated `X-Help-Center-Tenant-Scope` headers. Invalid or missing scopes are rejected. PostgreSQL applies these exact opaque refs to the source query through an inner join to `public.help_center_tenant_scopes`; garden-request rows for other owners are not selected into the application process.
 - `limit` is bounded to 1–500. If the selected source exceeds the requested limit, the endpoint returns 503 and no partial snapshot.
 - The response contract is version `1.0`, product id `urban_farming`, and a bounded snapshot timestamp.
 
-The source is only `public.garden_requests`. The response fields are:
+The data query reads only `public.garden_requests` and the owner-provisioned `public.help_center_tenant_scopes` mapping. The mapping table is not exposed through generic data routes and the product runtime role has SELECT only. The response fields are:
 
 | Field | Source/derivation | Allowed values |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ The response excludes names, email addresses, phone numbers, addresses, city, ga
 
 1. Product and data/privacy owners confirm that garden-request lifecycle state is an approved support surface and sign off on the field list, category semantics, source retention and support workflow.
 2. Security/IAM owners designate a dedicated Help Center runtime service account and authorize that principal to invoke the Urban Farming API. Configure the same exact principal in `HELP_CENTER_SERVICE_ACCOUNT_EMAIL`; configure the service URL as `HELP_CENTER_PROJECTION_AUDIENCE`.
-3. Product/security owners create a new random 32-byte-plus `SUPPORT_REFERENCE_SECRET` in Secret Manager. Map individual product users to `tenant_scope_ref` through an owner-controlled process; never grant product-wide wildcard access.
+3. Apply `database/supabase_migrations/20260928130000_help_center_tenant_scopes.sql` through the controlled Cloud SQL migration process. Product/security owners create a new random 32-byte-plus `SUPPORT_REFERENCE_SECRET` in Secret Manager, then provision approved `(tenant_scope_ref, owner_id)` mappings through a restricted database-owner process. This mapping table is not writable by the Urban Farming runtime role. Never grant product-wide wildcard access.
 4. Keep `HELP_CENTER_PROJECTION_ENABLED=false` until the central operator access policy contains explicitly approved `(urban-farming, tenant_scope_ref)` grants and the Help Center source URL/audience point to the verified production service.
 5. Deploy the product API with the feature still disabled; verify readiness and confirm an unauthenticated request returns 404. Enabling requires the named decisions above and an authenticated walkthrough using real authorized records.
 6. Roll out the Help Center read-through and inspect an authorized browser response, then verify a second tenant scope is hidden and the output contains only the contract fields. Do not copy response bodies into logs, fixtures or tickets.
@@ -52,4 +52,4 @@ The response excludes names, email addresses, phone numbers, addresses, city, ga
 
 ## Verification status
 
-Local focused tests cover allowlisted projection fields, status rejection, Google OIDC audience/service-account verification and Help Center tenant-scope filtering with a mocked source response. They do not exercise Google's live token service, Cloud Run IAM, real Cloud SQL rows, central IAP, browser access or owner-approved data. The feature remains disabled by default.
+Local focused tests cover allowlisted projection fields, status rejection, Google OIDC audience/service-account verification, exact SQL join/filter shape, and a negative two-tenant query simulation proving only requested-scope rows are fetched. They do not exercise Google's live token service, Cloud Run IAM, real Cloud SQL rows, the applied mapping migration, central IAP, browser access or owner-approved data. The feature remains disabled by default.
