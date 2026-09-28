@@ -1,5 +1,6 @@
 import html
 from datetime import UTC, datetime
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import structlog
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Request
 
 from app.core.errors import AppError
 from app.core.security import AdminUserDep, GatewayDep
+from app.core.tokens import mint_recovery_token
 from app.infrastructure.email import MailMessage
 from app.schemas.communications import (
     AssessmentLeadConvert,
@@ -244,11 +246,50 @@ async def convert_assessment_lead(
     )
     updated_lead = update_rows[0] if update_rows else lead
 
+    password_setup_email_sent = False
+    if created_user:
+        settings = request.app.state.settings
+        app_url = settings.app_base_url.rstrip("/")
+        app_origin = f"{urlsplit(app_url).scheme}://{urlsplit(app_url).netloc}"
+        if app_origin in settings.allowed_origins:
+            token = mint_recovery_token(
+                settings, UUID(str(grower_user["id"])), grower_user.get("email")
+            )
+            recovery_url = f"{app_url}/auth?token={quote(token, safe='')}&type=recovery"
+            try:
+                await request.app.state.email.send(
+                    MailMessage(
+                        to=str(lead["email"]),
+                        subject="Finish setting up your Urban Farming account",
+                        text=(
+                            f"Hi {lead.get('full_name') or 'there'},\n\n"
+                            "We have opened a grower account so you can follow the garden "
+                            "assessment request you submitted. Set your password using the "
+                            "secure link below. It expires in 30 minutes.\n\n"
+                            f"{recovery_url}\n\n"
+                            "If you did not submit an assessment request, you can ignore "
+                            "this email."
+                        ),
+                    )
+                )
+                password_setup_email_sent = True
+            except Exception:
+                logger.exception(
+                    "Could not send password setup email for converted assessment lead",
+                    lead_id=str(lead_id),
+                )
+        else:
+            logger.error(
+                "Password setup email skipped because APP_BASE_URL is not an allowed origin",
+                lead_id=str(lead_id),
+            )
+
     return {
         "lead": updated_lead,
         "gardenRequest": garden_request,
         "userId": str(grower_user["id"]),
         "createdUser": created_user,
+        "passwordSetupEmailSent": password_setup_email_sent,
     }
 
 
