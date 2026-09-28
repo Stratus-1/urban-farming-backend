@@ -38,7 +38,7 @@ gcloud storage buckets create gs://urban-farming-inspection-photos-us-central1 -
 
 # 4. Give the service account access
 #    (default compute SA or the one on the Cloud Run service)
-SA=$(gcloud run services describe urban-farming-backend-git --region=us-central1 \
+SA=$(gcloud run services describe urban-farming-backend-prod --region=us-central1 \
   --format='value(spec.template.spec.serviceAccountName)')
 SA=${SA:-$(gcloud iam service-accounts list --filter='displayName:Compute Engine default' --format='value(email)')}
 gcloud projects add-iam-policy-binding stratus-website-496818 \
@@ -54,14 +54,14 @@ gcloud storage buckets add-iam-policy-binding gs://urban-farming-inspection-phot
 ## Configure the service (fixes the failing deploy)
 
 ```bash
-gcloud run services update urban-farming-backend-git \
+gcloud run services update urban-farming-backend-prod \
   --region=us-central1 \
   --add-cloudsql-instances=stratus-website-496818:REGION:INSTANCE \
   --set-env-vars="ENVIRONMENT=production,DATA_BACKEND=postgres,AUTH_MODE=native,STORAGE_BACKEND=gcs,GCS_BUCKET=urban-farming-inspection-photos-us-central1,GCP_PROJECT_ID=stratus-website-496818,ALLOWED_ORIGINS=https://YOUR-FRONTEND-DOMAIN,ADMIN_EMAIL=admin@stratsol.co.za,SMTP_HOST=smtp.gmail.com,SMTP_PORT=587,SMTP_USER=admin@stratsol.co.za,SMTP_FROM_EMAIL=admin@stratsol.co.za,GOOGLE_CLIENT_ID=YOUR_OAUTH_CLIENT_ID" \
   --set-secrets="JWT_SECRET=jwt-secret:latest,DATABASE_URL=database-url:latest"
 
 # SMTP password (or put it in Secret Manager too):
-gcloud run services update urban-farming-backend-git --region=us-central1 \
+gcloud run services update urban-farming-backend-prod --region=us-central1 \
   --update-env-vars="SMTP_PASSWORD=..."
 ```
 
@@ -86,9 +86,8 @@ curl -X POST https://SERVICE_URL/api/v1/auth/signup \
    - `http://localhost:8080/buyer-auth/google/callback`
    - `https://urban-farming-web-prod-737493449401.us-central1.run.app/auth/google/callback`
    - `https://urban-farming-web-prod-737493449401.us-central1.run.app/buyer-auth/google/callback`
-   - `https://urban-farming-web-staging-737493449401.us-central1.run.app/auth/google/callback`
-   - `https://urban-farming-web-staging-737493449401.us-central1.run.app/buyer-auth/google/callback`
-3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the Cloud Run backend service and
+3. Confirm the staging frontend URL from Cloud Run before adding staging callback URIs. Set
+   `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the production Cloud Run backend service and
    `VITE_GOOGLE_CLIENT_ID` in the frontend.
 4. The frontend now sends the user through a redirect/callback flow, then calls
    `POST /api/v1/auth/google` with `{"code":"...","redirect_uri":"...","role":"grower|buyer"}`
