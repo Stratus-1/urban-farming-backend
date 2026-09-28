@@ -1,7 +1,7 @@
 substitutions:
   _REGION: us-central1
-  _SERVICE: urban-farming-backend-git
-  _REPOSITORY: urban-farming
+  _SERVICE: urban-farming-backend-prod
+  _REPOSITORY: cloud-run-source-deploy
 
 steps:
   - name: gcr.io/cloud-builders/docker

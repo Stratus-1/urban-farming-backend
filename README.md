@@ -24,16 +24,14 @@ database for authentication, workflows, orders, or other user-facing transaction
 Production URLs:
 
 - Frontend: `https://urban-farming-web-prod-737493449401.us-central1.run.app`
-- Staging frontend: `https://urban-farming-web-staging-737493449401.us-central1.run.app`
-- API: `https://urban-farming-backend-prod-737493449401.us-central1.run.app`
-- Staging API: `https://urban-farming-backend-staging-737493449401.us-central1.run.app`
-- OpenAPI: `https://urban-farming-backend-prod-737493449401.us-central1.run.app/docs`
+- API: `https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app`
+- OpenAPI: `https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app/docs`
 
 Current rollout state:
 
 - Native auth, JWT sessions, Cloud SQL, and Cloud Run deployment are in place.
-- Google login is being moved to a true redirect/callback flow.
-- The backend now expects a Google OAuth client secret for the code exchange path.
+- Production email/password signup is live. Google sign-in is disabled until its production OAuth origins and code-exchange flow are verified.
+- The production API uses the verified `a.run.app` URL above. Recheck Cloud Run for staging URLs before using them.
 
 ## Architecture
 
@@ -324,23 +322,23 @@ Before switching production traffic, reconcile at minimum:
 The frontend browser client uses `VITE_API_URL`:
 
 ```env
-VITE_API_URL=https://urban-farming-backend-git-737493449401.us-central1.run.app
+VITE_API_URL=https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app
 ```
 
 The backend must allow the exact deployed frontend origin:
 
 ```env
-ALLOWED_ORIGINS=https://urban-farming-git-737493449401.us-central1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081
+ALLOWED_ORIGINS=https://urban-farming-web-prod-737493449401.us-central1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081
 ```
 
 Because commas are meaningful to the `gcloud` dictionary flag parser, use a custom separator when
 updating this variable:
 
 ```bash
-gcloud run services update urban-farming-backend-git \
+gcloud run services update urban-farming-backend-prod \
   --project=stratus-website-496818 \
   --region=us-central1 \
-  --update-env-vars='^@^ALLOWED_ORIGINS=https://urban-farming-git-737493449401.us-central1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081'
+  --update-env-vars='^@^ALLOWED_ORIGINS=https://urban-farming-web-prod-737493449401.us-central1.run.app,http://localhost:3000,http://localhost:5173,http://localhost:8081'
 ```
 
 An `OPTIONS` response without `Access-Control-Allow-Origin` means the origin is missing or does
@@ -361,7 +359,7 @@ gcloud builds submit \
 ```
 
 The current `cloudbuild.yaml` targets `us-central1` and service
-`urban-farming-backend-git`.
+`urban-farming-backend-prod`.
 
 ### Required production configuration
 
@@ -369,11 +367,11 @@ Configure the Cloud SQL attachment, non-secret environment variables, and Secret
 on the Cloud Run service:
 
 ```bash
-gcloud run services update urban-farming-backend-git \
+gcloud run services update urban-farming-backend-prod \
   --project=stratus-website-496818 \
   --region=us-central1 \
   --add-cloudsql-instances=stratus-website-496818:us-central1:urban-farming-db-us-central1 \
-  --update-env-vars='^@^ENVIRONMENT=production@DATA_BACKEND=postgres@AUTH_MODE=native@STORAGE_BACKEND=gcs@GCS_BUCKET=urban-farming-inspection-photos-us-central1@GCP_PROJECT_ID=stratus-website-496818@ALLOWED_ORIGINS=https://urban-farming-git-737493449401.us-central1.run.app' \
+  --update-env-vars='^@^ENVIRONMENT=production@DATA_BACKEND=postgres@AUTH_MODE=native@STORAGE_BACKEND=gcs@GCS_BUCKET=urban-farming-inspection-photos-us-central1@GCP_PROJECT_ID=stratus-website-496818@ALLOWED_ORIGINS=https://urban-farming-web-prod-737493449401.us-central1.run.app' \
   --update-secrets='JWT_SECRET=jwt-secret:latest,DATABASE_URL=database-url:latest'
 ```
 
@@ -389,7 +387,7 @@ The runtime service account needs:
 ### Verify a deployment
 
 ```bash
-API_URL='https://urban-farming-backend-git-737493449401.us-central1.run.app'
+API_URL='https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app'
 
 curl -fsS "$API_URL/health/live"
 curl -fsS "$API_URL/health/ready"
@@ -400,7 +398,7 @@ Test CORS preflight:
 
 ```bash
 curl -i -X OPTIONS "$API_URL/api/v1/auth/login" \
-  -H 'Origin: https://urban-farming-git-737493449401.us-central1.run.app' \
+  -H 'Origin: https://urban-farming-web-prod-737493449401.us-central1.run.app' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: content-type'
 ```
@@ -430,7 +428,7 @@ ports or extending the health-check timeout:
 
 ```bash
 gcloud logging read \
-  'resource.type="cloud_run_revision" AND resource.labels.service_name="urban-farming-backend-git"' \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="urban-farming-backend-prod"' \
   --project=stratus-website-496818 \
   --limit=100 \
   --order=desc
