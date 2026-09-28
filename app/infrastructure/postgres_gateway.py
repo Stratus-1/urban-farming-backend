@@ -262,12 +262,10 @@ class PostgresGateway:
             """
         )
         async with self.engine.connect() as connection:
-            rows = (
-                await connection.execute(
-                    statement,
-                    {"tenant_scope_refs": tenant_scope_refs, "row_limit": limit},
-                )
-            ).mappings().all()
+            rows = (await connection.execute(
+                statement,
+                {"tenant_scope_refs": tenant_scope_refs, "row_limit": limit},
+            )).mappings().all()
         return [dict(row) for row in rows]
 
     async def insert(
@@ -484,3 +482,113 @@ class PostgresGateway:
                     ],
                 )
             return dict(report)
+
+    async def complete_garden_installation(
+        self,
+        request_id: UUID,
+        property_id: UUID,
+        payload: dict[str, Any],
+        *,
+        token: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Record the installation and advance its request in one transaction."""
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            request = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, owner_id, property_id, status FROM public.garden_requests "
+                            "WHERE id = :request_id FOR UPDATE"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if request is None:
+                raise AppError(404, "request_not_found", "Garden request not found")
+            if request["status"] != "needing_implements" or request["property_id"] != property_id:
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "The request changed while installation was being recorded. "
+                    "Refresh and try again.",
+                )
+
+            existing = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id FROM public.installations WHERE property_id = :property_id "
+                            "ORDER BY created_at ASC LIMIT 1 FOR UPDATE"
+                        ),
+                        {"property_id": property_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing:
+                installation = (
+                    (
+                        await connection.execute(
+                            text(
+                                "UPDATE public.installations SET owner_id = :owner_id, "
+                                "install_type = :install_type, size_m2 = :size_m2, "
+                                "capacity_units = :capacity_units, status = 'active', "
+                                "installed_at = :installed_at, photos = CAST(:photos AS jsonb), "
+                                "maintenance_notes = :maintenance_notes "
+                                "WHERE id = :installation_id RETURNING *"
+                            ),
+                            {
+                                **payload,
+                                "installed_at": date.fromisoformat(payload["installed_at"]),
+                                "photos": json.dumps(payload["photos"]),
+                                "owner_id": request["owner_id"],
+                                "installation_id": existing["id"],
+                            },
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            else:
+                installation = (
+                    (
+                        await connection.execute(
+                            text(
+                                "INSERT INTO public.installations "
+                                "(owner_id, property_id, install_type, size_m2, capacity_units, "
+                                "status, installed_at, photos, maintenance_notes) "
+                                "VALUES (:owner_id, :property_id, :install_type, :size_m2, "
+                                ":capacity_units, 'active', :installed_at, CAST(:photos AS jsonb), "
+                                ":maintenance_notes) RETURNING *"
+                            ),
+                            {
+                                **payload,
+                                "installed_at": date.fromisoformat(payload["installed_at"]),
+                                "photos": json.dumps(payload["photos"]),
+                                "owner_id": request["owner_id"],
+                                "property_id": property_id,
+                            },
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            updated_request = (
+                (
+                    await connection.execute(
+                        text(
+                            "UPDATE public.garden_requests SET status = 'implements_installed' "
+                            "WHERE id = :request_id RETURNING *"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            return dict(updated_request), dict(installation)

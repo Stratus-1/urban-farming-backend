@@ -57,6 +57,10 @@ class DataGateway(Protocol):
         self, name: str, payload: dict[str, Any], *, token: str | None = None, admin: bool = False
     ) -> Any: ...
 
+    async def complete_garden_installation(
+        self, request_id: Any, property_id: Any, payload: dict[str, Any], *, token: str | None
+    ) -> tuple[dict[str, Any], dict[str, Any]]: ...
+
 
 PUBLIC_TABLES = {
     "crops",

@@ -7,6 +7,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from app.core.errors import AppError
 from app.core.security import AdminUserDep, CurrentUserDep, GatewayDep
+from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.gardens import (
     CareActionCreate,
     GardenAllocationCreate,
@@ -561,47 +562,67 @@ async def complete_garden_installation(
         raise AppError(
             409, "inspection_approval_required", "An approved site assessment is required."
         )
-    existing = as_list(
-        await gateway.select(
-            "installations",
-            token=user.access_token,
-            filters={"property_id": garden_request["property_id"]},
-            order="created_at.asc",
-            limit=1,
-        )
-    )
     installation_payload = {
-        "owner_id": garden_request["owner_id"],
-        "property_id": garden_request["property_id"],
         "install_type": payload.install_type,
         "size_m2": payload.size_m2,
         "capacity_units": payload.capacity_units,
-        "status": "active",
         "installed_at": payload.installed_at.isoformat(),
         "photos": payload.photos,
         "maintenance_notes": payload.completion_notes,
     }
-    if existing:
-        rows = await gateway.update(
-            "installations",
+    if isinstance(gateway, PostgresGateway):
+        updated_request, installation = await gateway.complete_garden_installation(
+            request_id,
+            UUID(str(garden_request["property_id"])),
             installation_payload,
-            filters={"id": existing[0]["id"]},
             token=user.access_token,
         )
+        rows = [installation]
     else:
-        rows = await gateway.insert("installations", installation_payload, token=user.access_token)
-    updated = await gateway.update(
-        "garden_requests",
-        {"status": "implements_installed"},
-        filters={"id": request_id, "status": "needing_implements"},
-        token=user.access_token,
-    )
-    if not updated:
-        raise AppError(
-            409,
-            "request_changed",
-            "The request changed while installation was being recorded. Refresh and try again.",
+        existing = as_list(
+            await gateway.select(
+                "installations",
+                token=user.access_token,
+                filters={"property_id": garden_request["property_id"]},
+                order="created_at.asc",
+                limit=1,
+            )
         )
+        if existing:
+            rows = await gateway.update(
+                "installations",
+                {
+                    **installation_payload,
+                    "owner_id": garden_request["owner_id"],
+                    "status": "active",
+                },
+                filters={"id": existing[0]["id"]},
+                token=user.access_token,
+            )
+        else:
+            rows = await gateway.insert(
+                "installations",
+                {
+                    **installation_payload,
+                    "owner_id": garden_request["owner_id"],
+                    "property_id": garden_request["property_id"],
+                    "status": "active",
+                },
+                token=user.access_token,
+            )
+        updated = await gateway.update(
+            "garden_requests",
+            {"status": "implements_installed"},
+            filters={"id": request_id, "status": "needing_implements"},
+            token=user.access_token,
+        )
+        if not updated:
+            raise AppError(
+                409,
+                "request_changed",
+                "The request changed while installation was being recorded. Refresh and try again.",
+            )
+        updated_request = updated[0]
     await advance_workflow_stage(
         gateway,
         user,
@@ -621,7 +642,7 @@ async def complete_garden_installation(
         "crop_allocation",
         next_action="Allocate approved crops to the installed garden.",
     )
-    return {"request": updated[0], "installation": rows[0]}
+    return {"request": updated_request, "installation": rows[0]}
 
 
 @router.post("/garden-requests/{request_id}/planting/complete")
