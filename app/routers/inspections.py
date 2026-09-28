@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.core.errors import AppError
 from app.core.security import GatewayDep, InspectorUserDep
+from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.inspections import (
     ChecklistItemUpsert,
     InspectionAssessment,
@@ -281,6 +282,23 @@ async def start_report(
     user: InspectorUserDep,
     preview_inspector_id: UUID | None = Header(default=None, alias=PREVIEW_INSPECTOR_HEADER),
 ) -> dict:
+    if isinstance(gateway, PostgresGateway):
+        _assignment, inspector = await ensure_assignment_access(
+            payload.assignment_id,
+            gateway,
+            user,
+            preview_inspector_id,
+        )
+        report = await gateway.start_inspection_report(
+            assignment_id=payload.assignment_id,
+            inspector_id=UUID(str(inspector["id"])),
+            gps_lat=payload.gps_lat,
+            gps_lng=payload.gps_lng,
+            checklist_template=CHECKLIST_TEMPLATE,
+            token=user.access_token,
+        )
+        return {"report": [report]}
+
     if preview_inspector_id is not None or (
         user.has_any_role("admin", "operator") and not user.has_any_role("inspector")
     ):

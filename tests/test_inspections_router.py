@@ -3,7 +3,8 @@ from uuid import UUID
 import pytest
 
 from app.core.errors import AppError
-from app.routers.inspections import start_report, submit_for_approval
+from app.infrastructure.postgres_gateway import PostgresGateway
+from app.routers.inspections import CHECKLIST_TEMPLATE, start_report, submit_for_approval
 from app.schemas.common import CurrentUser
 from app.schemas.inspections import InspectionAssessment, InspectionStart
 
@@ -106,6 +107,22 @@ class FakeGateway:
         return []
 
 
+class FakePostgresGateway(FakeGateway, PostgresGateway):
+    def __init__(self) -> None:
+        FakeGateway.__init__(self)
+        self.start_report_calls: list[dict] = []
+
+    async def start_inspection_report(self, **kwargs):
+        self.start_report_calls.append(kwargs)
+        return {
+            "id": "b76b535f-6b92-4cb8-9b5e-cf9a1c4ab579",
+            "assignment_id": str(kwargs["assignment_id"]),
+            "inspector_id": str(kwargs["inspector_id"]),
+            "garden_id": self.assignment["garden_id"],
+            "overall_status": "pending",
+        }
+
+
 def admin_user() -> CurrentUser:
     return CurrentUser(
         id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
@@ -146,6 +163,35 @@ async def test_start_report_allows_admin_preview_to_act_as_selected_inspector() 
     assert checklist_table == "inspection_checklist_items"
     assert isinstance(checklist_payload, list)
     assert len(checklist_payload) == 8
+
+
+@pytest.mark.asyncio
+async def test_postgres_start_report_uses_atomic_backend_path_instead_of_missing_rpc() -> None:
+    gateway = FakePostgresGateway()
+
+    result = await start_report(
+        InspectionStart(
+            assignment_id=UUID(gateway.assignment["id"]),
+            gps_lat=-34.0,
+            gps_lng=18.5,
+        ),
+        gateway,
+        inspector_user(gateway),
+        None,
+    )
+
+    assert result["report"][0]["assignment_id"] == gateway.assignment["id"]
+    assert gateway.rpc_calls == []
+    assert gateway.start_report_calls == [
+        {
+            "assignment_id": UUID(gateway.assignment["id"]),
+            "inspector_id": UUID(gateway.inspector["id"]),
+            "gps_lat": -34.0,
+            "gps_lng": 18.5,
+            "checklist_template": CHECKLIST_TEMPLATE,
+            "token": "inspector-token",
+        }
+    ]
 
 
 @pytest.mark.asyncio
