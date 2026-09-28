@@ -484,4 +484,5 @@ A `503` points to database/network/credential availability and should prevent tr
 
 - `docs/API_INVENTORY.md` — Supabase-to-API contract mapping
 - `docs/DEPLOY_CLOUD_RUN.md` — focused Cloud Run deployment notes
+- `docs/HELP_CENTER_SUPPORT_PROJECTION.md` — feature-disabled, tenant-scoped read-only support feed contract and rollout gates
 - `/docs` on a running service — generated interactive API documentation

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import EmailStr, Field
@@ -64,6 +65,36 @@ class AssessmentLeadConvert(APIModel):
     address: str | None = Field(default=None, max_length=240)
     city: str | None = Field(default=None, max_length=120)
     admin_notes: str | None = Field(default=None, max_length=4000)
+
+
+class HelpCenterGardenRequestCase(APIModel):
+    """Minimized, product-owned lifecycle projection; deliberately excludes contact content."""
+
+    case_ref: str = Field(pattern=r"^ufc-[a-f0-9]{28}$")
+    tenant_scope_ref: str = Field(pattern=r"^uf-tenant-[a-f0-9]{64}$")
+    requester_ref: str = Field(pattern=r"^uf-user-[a-f0-9]{64}$")
+    category: Literal["garden_request"] = "garden_request"
+    status: Literal[
+        "submitted",
+        "inspection_scheduled",
+        "accepted",
+        "needing_implements",
+        "implements_installed",
+        "seeds",
+        "final_install",
+        "live",
+        "rejected",
+        "cancelled",
+    ]
+    created_at: datetime
+    updated_at: datetime
+
+
+class HelpCenterGardenRequestSnapshot(APIModel):
+    contract_version: Literal["1.0"] = "1.0"
+    product_id: Literal["urban_farming"] = "urban_farming"
+    items: list[HelpCenterGardenRequestCase]
+    snapshot_at: datetime
 
 
 class GardenRequestNotification(APIModel):

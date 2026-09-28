@@ -1,14 +1,17 @@
+import hashlib
+import hmac
 import html
 from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from app.core.errors import AppError
 from app.core.security import AdminUserDep, GatewayDep
 from app.core.tokens import mint_recovery_token
+from app.core.workload_identity import WorkloadIdentityError, verify_workload_identity
 from app.infrastructure.email import MailMessage
 from app.schemas.communications import (
     AssessmentLeadConvert,
@@ -16,6 +19,8 @@ from app.schemas.communications import (
     AssessmentLeadStatusUpdate,
     ContactMessageCreate,
     GardenRequestNotification,
+    HelpCenterGardenRequestCase,
+    HelpCenterGardenRequestSnapshot,
     NewsletterSignup,
     SignupNotification,
 )
@@ -23,6 +28,48 @@ from app.services.mobile_push import send_push_to_audience
 
 router = APIRouter(tags=["communications"])
 logger = structlog.get_logger(__name__)
+
+
+def _support_reference(secret: str, purpose: str, value: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"urban_farming\0{purpose}\0{value}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"ufc-{digest[:28]}" if purpose == "case" else f"uf-{purpose}-{digest}"
+
+
+GARDEN_REQUEST_PROJECTION_STATUSES = frozenset(
+    {
+        "submitted",
+        "inspection_scheduled",
+        "accepted",
+        "needing_implements",
+        "implements_installed",
+        "seeds",
+        "final_install",
+        "live",
+        "rejected",
+        "cancelled",
+    }
+)
+
+
+def project_garden_request_for_help_center(row: dict, secret: str) -> HelpCenterGardenRequestCase:
+    """Project only approved lifecycle fields; requester identity remains product-owned."""
+    owner_id = row.get("owner_id")
+    status = str(row.get("status") or "")
+    if not owner_id or status not in GARDEN_REQUEST_PROJECTION_STATUSES:
+        raise ValueError("Garden request is outside the support projection contract")
+    return HelpCenterGardenRequestCase(
+        case_ref=_support_reference(secret, "case", str(row["id"])),
+        tenant_scope_ref=_support_reference(secret, "tenant", str(owner_id)),
+        requester_ref=_support_reference(secret, "user", str(owner_id)),
+        category="garden_request",
+        status=status,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 @router.post("/contact", status_code=201)
@@ -51,6 +98,92 @@ async def contact(payload: ContactMessageCreate, request: Request, gateway: Gate
     except Exception:
         logger.exception("contact_notification_failed", contact_id=str(rows[0].get("id")))
     return rows[0]
+
+
+@router.get(
+    "/integrations/help-center/garden-requests",
+    response_model=HelpCenterGardenRequestSnapshot,
+    include_in_schema=True,
+)
+async def help_center_garden_request_snapshot(
+    request: Request,
+    gateway: GatewayDep,
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=500, ge=1, le=500),
+    tenant_scope_refs: list[str] = Header(
+        alias="X-Help-Center-Tenant-Scope", min_length=1, max_length=100
+    ),
+) -> HelpCenterGardenRequestSnapshot:
+    """Return a read-only, PII-minimized snapshot for one allowlisted service identity."""
+    settings = request.app.state.settings
+    if not settings.help_center_projection_enabled:
+        raise HTTPException(status_code=404, detail="Support projection is unavailable")
+    if settings.data_backend != "postgres" or settings.auth_mode != "native":
+        raise HTTPException(
+            status_code=503,
+            detail="Support projection requires production data mode",
+        )
+
+    secret = settings.support_reference_secret
+    audience = settings.help_center_projection_audience
+    service_email = settings.help_center_service_account_email
+    secret_value = secret.get_secret_value() if secret else ""
+    if len(secret_value) < 32 or not audience or not service_email:
+        raise HTTPException(status_code=503, detail="Support projection identity is not configured")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="A service identity token is required")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        await verify_workload_identity(
+            token,
+            audience=audience,
+            service_account_email=service_email,
+        )
+    except WorkloadIdentityError as error:
+        raise HTTPException(status_code=401, detail="Service identity is not allowed") from error
+
+    if any(
+        not isinstance(scope, str)
+        or not scope.startswith("uf-tenant-")
+        or len(scope) != len("uf-tenant-") + 64
+        or any(char not in "0123456789abcdef" for char in scope.removeprefix("uf-tenant-"))
+        for scope in tenant_scope_refs
+    ):
+        raise HTTPException(status_code=422, detail="Tenant scope reference is invalid")
+
+    rows = await gateway.select(
+        "garden_requests",
+        admin=True,
+        columns="id,owner_id,status,created_at,updated_at",
+        order="updated_at.asc",
+        limit=limit + 1,
+    )
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=503, detail="Support projection source is unavailable")
+    if len(rows) > limit:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Support projection exceeds the bounded snapshot size; no partial snapshot returned"
+            ),
+        )
+
+    try:
+        requested_scopes = set(tenant_scope_refs)
+        cases = [
+            projection
+            for projection in (
+                project_garden_request_for_help_center(row, secret_value) for row in rows
+            )
+            if projection.tenant_scope_ref in requested_scopes
+        ]
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Support projection source is invalid",
+        ) from error
+
+    return HelpCenterGardenRequestSnapshot(items=cases, snapshot_at=datetime.now(UTC))
 
 
 @router.put("/newsletter")
