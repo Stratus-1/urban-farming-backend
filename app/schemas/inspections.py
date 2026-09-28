@@ -46,6 +46,9 @@ class InspectionRisk(APIModel):
 
 
 class InspectionAssessment(APIModel):
+    notes: str | None = Field(default=None, max_length=4000)
+    gps_lat: float | None = Field(default=None, ge=-90, le=90)
+    gps_lng: float | None = Field(default=None, ge=-180, le=180)
     sunlight_hours: float = Field(ge=0, le=24)
     water_access: Literal["none", "limited", "reliable"]
     usable_space_m2: float = Field(gt=0, le=100000)
