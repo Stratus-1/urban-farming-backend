@@ -254,8 +254,9 @@ class _GardenPlantingEngine(_InspectionEngine):
 
 
 class _GardenInstallationConnection:
-    def __init__(self, workflow_stages: bool = True) -> None:
+    def __init__(self, workflow_stages: bool = True, approved_report: bool = True) -> None:
         self.workflow_stages = workflow_stages
+        self.approved_report = approved_report
         self.statements: list[tuple[str, object]] = []
         self.rollback_requested = False
 
@@ -270,6 +271,12 @@ class _GardenInstallationConnection:
                     "property_id": UUID("22222222-2222-4222-8222-222222222222"),
                     "status": "needing_implements",
                 }
+            )
+        if "FROM public.inspection_reports" in sql:
+            return (
+                _MappingsResult({"id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")})
+                if self.approved_report
+                else _MappingsResult()
             )
         if "FROM public.workflow_stages" in sql:
             if not self.workflow_stages:
@@ -373,6 +380,28 @@ async def test_postgres_installation_rolls_back_when_workflow_stage_is_missing()
         )
 
     assert raised.value.code == "workflow_stage_missing"
+    assert connection.rollback_requested is True
+    assert not any("INSERT INTO public.installations" in sql for sql, _ in connection.statements)
+
+
+@pytest.mark.asyncio
+async def test_postgres_installation_rechecks_approved_report_before_writes() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenInstallationConnection(approved_report=False)
+    gateway.engine = _GardenInstallationEngine(connection)
+
+    with pytest.raises(AppError) as raised:
+        await gateway.complete_garden_installation(
+            UUID("11111111-1111-4111-8111-111111111111"),
+            UUID("22222222-2222-4222-8222-222222222222"),
+            {"installed_at": "2026-09-20", "photos": []},
+            UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            token="admin-token",
+        )
+
+    assert raised.value.code == "inspection_approval_required"
     assert connection.rollback_requested is True
     assert not any("INSERT INTO public.installations" in sql for sql, _ in connection.statements)
 
