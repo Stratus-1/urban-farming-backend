@@ -372,7 +372,8 @@ class _SubmissionConnection:
                         "category": "Garden condition",
                         "item_name": "Full garden view",
                         "requires_photo": True,
-                        "result": "pass",
+                        "result": "na",
+                        "comment": "Water installation not present yet",
                     }
                 ]
             )

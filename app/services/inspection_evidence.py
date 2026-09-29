@@ -26,7 +26,9 @@ def inspection_evidence_gaps(
 
         label = str(item.get("item_name") or item.get("category") or "Checklist item")
         item_id = item.get("id")
-        if item.get("result") in (None, "na"):
+        result = item.get("result")
+        comment = str(item.get("comment") or "").strip()
+        if result is None or (result == "na" and not comment):
             missing_results.append(label)
 
         category = str(item.get("category") or "").casefold()
