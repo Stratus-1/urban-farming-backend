@@ -225,16 +225,24 @@ async def test_submit_for_approval_persists_assessment_notes_and_gps() -> None:
         "inspector_id": gateway.inspector["id"],
         "assessment_status": "draft",
     }
+    required_checks = [
+        ("Garden condition", "full_garden_view"),
+        ("Crop health", "crop_close_up"),
+        ("Irrigation status", "irrigation"),
+        ("Pest and disease", "problem_area"),
+    ]
     gateway.checklist_items = [
         {
             "id": f"00000000-0000-0000-0000-00000000000{index}",
+            "category": category,
+            "item_name": category,
             "requires_photo": True,
             "result": "pass",
         }
-        for index in range(1, 5)
+        for index, (category, _) in enumerate(required_checks, start=1)
     ]
     gateway.photos = [
-        {"checklist_item_id": item["id"]} for item in gateway.checklist_items
+        {"checklist_item_id": None, "photo_type": photo_type} for _, photo_type in required_checks
     ]
     result = await submit_for_approval(
         UUID(gateway.report["id"]),
