@@ -501,6 +501,200 @@ class PostgresGateway:
                 )
             return dict(report)
 
+    async def schedule_garden_request_inspection(
+        self,
+        request_id: UUID,
+        schedule: dict[str, Any],
+        actor_id: UUID,
+        *,
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Create/link a property and its inspection assignment atomically and idempotently."""
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            request = (
+                (
+                    await connection.execute(
+                        text("SELECT * FROM public.garden_requests WHERE id = :id FOR UPDATE"),
+                        {"id": request_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if request is None:
+                raise AppError(404, "request_not_found", "Garden request not found")
+            if request["status"] not in {"submitted", "inspection_scheduled"}:
+                raise AppError(
+                    409,
+                    "invalid_request_transition",
+                    f"Cannot schedule an inspection for a {request['status']} request.",
+                )
+
+            inspector = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id FROM public.inspectors WHERE id = :id AND status = 'active'"
+                        ),
+                        {"id": schedule["inspector_id"]},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if inspector is None:
+                raise AppError(422, "inspector_unavailable", "Select an active inspector.")
+
+            property_id = request["property_id"]
+            if property_id is None:
+                property_row = (
+                    (
+                        await connection.execute(
+                            text(
+                                "INSERT INTO public.properties "
+                                "(owner_id, label, address, city, lat, lng, available_space_m2, "
+                                "sunlight_hours, notes) VALUES (:owner_id, :label, "
+                                ":address, :city, "
+                                ":lat, :lng, :available_space_m2, :sunlight_hours, :notes) "
+                                "RETURNING id"
+                            ),
+                            {
+                                "owner_id": request["owner_id"],
+                                "label": request["label"],
+                                "address": request["address"],
+                                "city": request["city"],
+                                "lat": request["lat"],
+                                "lng": request["lng"],
+                                "available_space_m2": request["available_space_m2"],
+                                "sunlight_hours": request["sunlight_hours"],
+                                "notes": (
+                                    (request["details"] or {}).get("notes")
+                                    if isinstance(request["details"], dict)
+                                    else None
+                                )
+                                or request["admin_notes"],
+                            },
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                property_id = property_row["id"]
+            else:
+                property_row = (
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT owner_id FROM public.properties WHERE id = :id FOR UPDATE"
+                            ),
+                            {"id": property_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if property_row is None or property_row["owner_id"] != request["owner_id"]:
+                    raise AppError(
+                        409,
+                        "garden_property_mismatch",
+                        "The request is linked to an unavailable garden record.",
+                    )
+
+            assignment = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, status FROM public.inspection_assignments "
+                            "WHERE garden_id = :garden_id AND status IN ('pending', 'in_progress') "
+                            "ORDER BY updated_at DESC LIMIT 1 FOR UPDATE"
+                        ),
+                        {"garden_id": property_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            assignment_values = {
+                "inspector_id": schedule["inspector_id"],
+                "garden_id": property_id,
+                "due_date": schedule["due_date"],
+                "scheduled_for": schedule["scheduled_for"],
+                "priority": schedule["priority"],
+                "admin_notes": schedule["admin_notes"],
+            }
+            if assignment:
+                assignment_row = (
+                    (
+                        await connection.execute(
+                            text(
+                                "UPDATE public.inspection_assignments "
+                                "SET inspector_id = :inspector_id, "
+                                "due_date = :due_date, scheduled_for = :scheduled_for, "
+                                "priority = :priority, admin_notes = :admin_notes, "
+                                "updated_at = now() WHERE id = :id RETURNING *"
+                            ),
+                            {**assignment_values, "id": assignment["id"]},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+            else:
+                assignment_row = (
+                    (
+                        await connection.execute(
+                            text(
+                                "INSERT INTO public.inspection_assignments "
+                                "(inspector_id, garden_id, due_date, scheduled_for, "
+                                "priority, status, "
+                                "admin_notes) VALUES (:inspector_id, :garden_id, :due_date, "
+                                ":scheduled_for, :priority, 'pending', :admin_notes) RETURNING *"
+                            ),
+                            assignment_values,
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+
+            details = request["details"] if isinstance(request["details"], dict) else {}
+            details = {
+                **details,
+                "inspectionAssignment": {
+                    "assignmentId": str(assignment_row["id"]),
+                    "inspectorId": str(schedule["inspector_id"]),
+                    "dueDate": schedule["due_date"].isoformat(),
+                    "scheduledFor": schedule["scheduled_for"].isoformat(),
+                    "priority": schedule["priority"],
+                    "focusAreas": schedule["focus_areas"],
+                    "focusBrief": schedule["focus_brief"],
+                    "accessInstructions": schedule["access_instructions"],
+                    "assignedBy": str(actor_id),
+                },
+            }
+            request_columns = await self._table_column_types("garden_requests")
+            details_value = coerce_column_value(details, request_columns.get("details"))
+            details_sql, details_bound_value = bind_value("details", details_value)
+            admin_notes = schedule["admin_notes"] or request["admin_notes"]
+            result = await connection.execute(
+                text(
+                    "UPDATE public.garden_requests SET property_id = :property_id, "
+                    f"admin_notes = :admin_notes, details = {details_sql}, updated_at = now() "
+                    "WHERE id = :request_id RETURNING *"
+                ),
+                {
+                    "property_id": property_id,
+                    "admin_notes": admin_notes,
+                    "details": details_bound_value,
+                    "request_id": request_id,
+                },
+            )
+            return {
+                "request": dict(result.mappings().first()),
+                "assignment": dict(assignment_row),
+            }
+
     async def update_garden_request_workflow(
         self,
         request_id: UUID,

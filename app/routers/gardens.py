@@ -12,6 +12,7 @@ from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.gardens import (
     CareActionCreate,
     GardenAllocationCreate,
+    GardenInspectionSchedule,
     GardenInstallationComplete,
     GardenPlantingComplete,
     GardenRequestCreate,
@@ -150,6 +151,38 @@ async def list_garden_requests(gateway: GatewayDep, user: CurrentUserDep) -> dic
         )
     )
     return {"items": rows, "count": len(rows)}
+
+
+@router.post("/garden-requests/{request_id}/inspection-schedule")
+async def schedule_garden_request_inspection(
+    request_id: UUID,
+    payload: GardenInspectionSchedule,
+    gateway: GatewayDep,
+    user: AdminUserDep,
+) -> dict:
+    if not isinstance(gateway, PostgresGateway):
+        raise AppError(
+            503,
+            "atomic_scheduling_unavailable",
+            "Inspection scheduling is temporarily unavailable.",
+        )
+    schedule = payload.model_dump(mode="python")
+    note_parts = [
+        f"FOCUS AREAS: {', '.join(payload.focus_areas)}" if payload.focus_areas else None,
+        f"INSPECTION BRIEF: {payload.focus_brief.strip()}" if payload.focus_brief else None,
+        (
+            f"ACCESS INSTRUCTIONS: {payload.access_instructions.strip()}"
+            if payload.access_instructions
+            else None
+        ),
+    ]
+    schedule["admin_notes"] = "\n\n".join(part for part in note_parts if part)
+    return await gateway.schedule_garden_request_inspection(
+        request_id,
+        schedule,
+        user.id,
+        token=user.access_token,
+    )
 
 
 @router.patch("/garden-requests/{request_id}")
