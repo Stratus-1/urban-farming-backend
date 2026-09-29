@@ -149,8 +149,10 @@ class _InspectionTransaction:
 class _InspectionEngine:
     def __init__(self, connection) -> None:
         self.connection = connection
+        self.begin_calls = 0
 
     def begin(self):
+        self.begin_calls += 1
         return _InspectionTransaction(self.connection)
 
 
@@ -284,6 +286,144 @@ async def test_postgres_start_inspection_report_locks_assignment_and_seeds_check
     assert len(checklist_seed) == 2
     assert checklist_seed[0]["category"] == "Garden condition"
     assert checklist_seed[0]["requires_photo"] is True
+
+
+class _SubmissionConnection:
+    def __init__(self, *, missing_photo: bool = False) -> None:
+        self.statements: list[tuple[str, object]] = []
+        self.missing_photo = missing_photo
+        self.report = {
+            "id": UUID("b76b535f-6b92-4cb8-9b5e-cf9a1c4ab579"),
+            "assignment_id": UUID("226b3f34-1e69-47b0-a691-1932d08001bf"),
+            "inspector_id": UUID("4caa21df-b050-43af-8f99-9fdf0627aeb0"),
+            "assessment_status": "draft",
+        }
+        self.assignment = {"id": self.report["assignment_id"], "status": "in_progress"}
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        parameters = parameters or {}
+        self.statements.append((sql, parameters))
+        if "FROM public.inspection_reports" in sql:
+            return _MappingsResult(dict(self.report))
+        if "FROM public.inspection_assignments" in sql:
+            return _MappingsResult(dict(self.assignment))
+        if "FROM public.inspection_checklist_items" in sql:
+            return _MappingsResult(
+                [
+                    {
+                        "id": UUID("00000000-0000-0000-0000-000000000001"),
+                        "requires_photo": True,
+                        "result": "pass",
+                    }
+                ]
+            )
+        if "UPDATE public.inspection_reports" in sql:
+            self.report.update(parameters)
+            self.report["assessment_status"] = "submitted_for_approval"
+            return _MappingsResult(dict(self.report))
+        if "UPDATE public.inspection_assignments" in sql:
+            self.assignment.update(parameters)
+            self.assignment["status"] = "completed"
+        return _MappingsResult()
+
+    async def scalar(self, _statement, _parameters=None):
+        return self.missing_photo
+
+
+@pytest.mark.asyncio
+async def test_inspection_submission_saves_report_and_assignment_in_one_transaction() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    connection = _SubmissionConnection()
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    gateway.engine = _InspectionEngine(connection)
+    assessment = {
+        "notes": "Clear irrigation access",
+        "gps_lat": -34.0,
+        "gps_lng": 18.5,
+        "sunlight_hours": 7.0,
+        "water_access": "reliable",
+        "usable_space_m2": 12.0,
+        "installation_types": ["raised_bed"],
+        "measurements": {},
+        "risks": [],
+        "suitability_score": 85,
+        "score_breakdown": {"sunlight": 20},
+        "suitability_band": "suitable",
+        "recommended_crops": ["Spinach"],
+        "recommended_infrastructure": ["Raised bed"],
+        "overall_status": "pass",
+        "follow_up_required": False,
+        "submitted_at": "2026-09-29T10:00:00+00:00",
+    }
+
+    result = await gateway.submit_inspection_for_approval(
+        report_id=connection.report["id"],
+        assignment_id=connection.report["assignment_id"],
+        inspector_id=connection.report["inspector_id"],
+        assessment=assessment,
+        token=None,
+    )
+
+    report_update = next(
+        sql for sql, _ in connection.statements if "UPDATE public.inspection_reports" in sql
+    )
+    assignment_update = next(
+        sql for sql, _ in connection.statements if "UPDATE public.inspection_assignments" in sql
+    )
+    assert "FOR UPDATE" in next(
+        sql for sql, _ in connection.statements if "FROM public.inspection_reports" in sql
+    )
+    assert connection.statements.index(
+        (report_update, next(p for s, p in connection.statements if s == report_update))
+    ) < connection.statements.index(
+        (assignment_update, next(p for s, p in connection.statements if s == assignment_update))
+    )
+    assert result["assessment_status"] == "submitted_for_approval"
+    assert connection.assignment["status"] == "completed"
+    assert gateway.engine.begin_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_inspection_submission_rejects_missing_photo_before_writing() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    connection = _SubmissionConnection(missing_photo=True)
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    gateway.engine = _InspectionEngine(connection)
+    assessment = {
+        "notes": None,
+        "gps_lat": None,
+        "gps_lng": None,
+        "sunlight_hours": 7.0,
+        "water_access": "reliable",
+        "usable_space_m2": 12.0,
+        "installation_types": ["raised_bed"],
+        "measurements": {},
+        "risks": [],
+        "suitability_score": 85,
+        "score_breakdown": {},
+        "suitability_band": "suitable",
+        "recommended_crops": ["Spinach"],
+        "recommended_infrastructure": ["Raised bed"],
+        "overall_status": "pass",
+        "follow_up_required": False,
+        "submitted_at": "2026-09-29T10:00:00+00:00",
+    }
+
+    with pytest.raises(AppError) as raised:
+        await gateway.submit_inspection_for_approval(
+            report_id=connection.report["id"],
+            assignment_id=connection.report["assignment_id"],
+            inspector_id=connection.report["inspector_id"],
+            assessment=assessment,
+            token=None,
+        )
+
+    assert raised.value.code == "inspection_evidence_incomplete"
+    assert gateway.engine.begin_calls == 1
+    assert not any("UPDATE public." in sql for sql, _ in connection.statements)
 
 
 class _GardenPlantingConnection:
