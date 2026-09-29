@@ -121,6 +121,145 @@ def build_filters(filters: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
 
 
 class PostgresGateway:
+    async def submit_inspection_for_approval(
+        self,
+        *,
+        report_id: UUID,
+        assignment_id: UUID,
+        inspector_id: UUID,
+        assessment: dict[str, Any],
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Validate evidence and submit report/assignment as one Cloud SQL transaction."""
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            report = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, assignment_id, inspector_id, assessment_status "
+                            "FROM public.inspection_reports WHERE id=:report_id FOR UPDATE"
+                        ),
+                        {"report_id": report_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if (
+                report is None
+                or str(report["assignment_id"]) != str(assignment_id)
+                or str(report["inspector_id"]) != str(inspector_id)
+            ):
+                raise AppError(404, "inspection_report_not_found", "Inspection report not found")
+            if report["assessment_status"] == "submitted_for_approval":
+                raise AppError(
+                    409,
+                    "assessment_already_submitted",
+                    "This assessment is already awaiting approval",
+                )
+            assignment = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, status FROM public.inspection_assignments "
+                            "WHERE id=:assignment_id "
+                            "AND inspector_id=:inspector_id FOR UPDATE"
+                        ),
+                        {"assignment_id": assignment_id, "inspector_id": inspector_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if assignment is None:
+                raise AppError(
+                    404, "inspection_assignment_not_found", "Inspection assignment not found"
+                )
+            items = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, requires_photo, result "
+                            "FROM public.inspection_checklist_items "
+                            "WHERE report_id=:report_id FOR UPDATE"
+                        ),
+                        {"report_id": report_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not items:
+                raise AppError(
+                    409,
+                    "inspection_checklist_missing",
+                    "The inspection checklist is not ready. Reopen the inspection and try again.",
+                )
+            if any(item["requires_photo"] and item["result"] in (None, "na") for item in items):
+                raise AppError(
+                    422,
+                    "inspection_evidence_incomplete",
+                    "Complete every required inspection item and attach its site photo "
+                    "before submitting.",
+                )
+            missing = await connection.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM public.inspection_checklist_items i "
+                    "WHERE i.report_id=:report_id AND i.requires_photo AND NOT EXISTS "
+                    "(SELECT 1 FROM public.inspection_photos p WHERE p.report_id=i.report_id "
+                    "AND p.checklist_item_id=i.id))"
+                ),
+                {"report_id": report_id},
+            )
+            if missing:
+                raise AppError(
+                    422,
+                    "inspection_evidence_incomplete",
+                    "Complete every required inspection item and attach its site photo "
+                    "before submitting.",
+                )
+            values = dict(assessment)
+            values.update(report_id=report_id, assignment_id=assignment_id)
+            for key in ("risks", "measurements", "score_breakdown"):
+                values[key] = json.dumps(values[key])
+            row = (
+                (
+                    await connection.execute(
+                        text(
+                            "UPDATE public.inspection_reports SET notes=:notes, "
+                            "gps_lat=:gps_lat, gps_lng=:gps_lng, "
+                            "sunlight_hours=:sunlight_hours, water_access=:water_access, "
+                            "usable_space_m2=:usable_space_m2, "
+                            "installation_types=:installation_types, "
+                            "measurements=CAST(:measurements AS jsonb), "
+                            "risks=CAST(:risks AS jsonb), suitability_score=:suitability_score, "
+                            "score_breakdown=CAST(:score_breakdown AS jsonb), "
+                            "suitability_band=:suitability_band, "
+                            "recommended_crops=:recommended_crops, "
+                            "recommended_infrastructure=:recommended_infrastructure, "
+                            "assessment_status='submitted_for_approval', "
+                            "overall_status=:overall_status, "
+                            "follow_up_required=:follow_up_required, "
+                            "submitted_at=:submitted_at, updated_at=now() "
+                            "WHERE id=:report_id RETURNING *"
+                        ),
+                        values,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await connection.execute(
+                text(
+                    "UPDATE public.inspection_assignments SET status='completed', "
+                    "completed_at=:submitted_at, "
+                    "updated_at=now() WHERE id=:assignment_id"
+                ),
+                values,
+            )
+            return dict(row)
+
     """Cloud SQL adapter. API authorization replaces browser-side RLS in this mode."""
 
     def __init__(self, database_url: str, pool_size: int = 5, max_overflow: int = 10) -> None:

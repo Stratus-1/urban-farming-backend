@@ -581,9 +581,7 @@ async def submit_for_approval(
             "inspection_checklist_missing",
             "The inspection checklist is not ready. Reopen the inspection and try again.",
         )
-    required_photo_items = [
-        item for item in checklist_items if item.get("requires_photo") is True
-    ]
+    required_photo_items = [item for item in checklist_items if item.get("requires_photo") is True]
     photos = as_list(
         await gateway.select(
             "inspection_photos",
@@ -595,8 +593,7 @@ async def submit_for_approval(
     incomplete_required = [
         item
         for item in required_photo_items
-        if item.get("result") in {None, "na"}
-        or str(item.get("id")) not in photo_item_ids
+        if item.get("result") in {None, "na"} or str(item.get("id")) not in photo_item_ids
     ]
     if incomplete_required:
         raise AppError(
@@ -610,27 +607,40 @@ async def submit_for_approval(
         "conditional": "warning",
         "not_suitable": "fail",
     }[scored.suitability_band]
+    assessment_values = {
+        "notes": payload.notes,
+        "gps_lat": payload.gps_lat,
+        "gps_lng": payload.gps_lng,
+        "sunlight_hours": scored.sunlight_hours,
+        "water_access": scored.water_access,
+        "usable_space_m2": scored.usable_space_m2,
+        "installation_types": scored.installation_types,
+        "measurements": scored.measurements,
+        "risks": [risk.model_dump() for risk in scored.risks],
+        "suitability_score": scored.suitability_score,
+        "score_breakdown": scored.score_breakdown,
+        "suitability_band": scored.suitability_band,
+        "recommended_crops": scored.recommended_crops,
+        "recommended_infrastructure": scored.recommended_infrastructure,
+        "overall_status": overall_status,
+        "follow_up_required": scored.suitability_band != "suitable",
+        "submitted_at": submitted_at,
+    }
+    atomic_submit = getattr(gateway, "submit_inspection_for_approval", None)
+    if callable(atomic_submit):
+        submitted_report = await atomic_submit(
+            report_id=report_id,
+            assignment_id=UUID(str(report["assignment_id"])),
+            inspector_id=UUID(str(report["inspector_id"])),
+            assessment=assessment_values,
+            token=user.access_token,
+        )
+        return {"report": submitted_report, "assessment": scored.model_dump()}
     rows = await gateway.update(
         "inspection_reports",
         {
-            "notes": payload.notes,
-            "gps_lat": payload.gps_lat,
-            "gps_lng": payload.gps_lng,
-            "sunlight_hours": scored.sunlight_hours,
-            "water_access": scored.water_access,
-            "usable_space_m2": scored.usable_space_m2,
-            "installation_types": scored.installation_types,
-            "measurements": scored.measurements,
-            "risks": [risk.model_dump() for risk in scored.risks],
-            "suitability_score": scored.suitability_score,
-            "score_breakdown": scored.score_breakdown,
-            "suitability_band": scored.suitability_band,
-            "recommended_crops": scored.recommended_crops,
-            "recommended_infrastructure": scored.recommended_infrastructure,
+            **assessment_values,
             "assessment_status": "submitted_for_approval",
-            "overall_status": overall_status,
-            "follow_up_required": scored.suitability_band != "suitable",
-            "submitted_at": submitted_at,
         },
         filters={"id": str(report_id)},
         token=user.access_token,
