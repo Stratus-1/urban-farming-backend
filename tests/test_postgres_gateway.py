@@ -253,6 +253,130 @@ class _GardenPlantingEngine(_InspectionEngine):
         return _GardenPlantingTransaction(self.connection)
 
 
+class _GardenInstallationConnection:
+    def __init__(self, workflow_stages: bool = True) -> None:
+        self.workflow_stages = workflow_stages
+        self.statements: list[tuple[str, object]] = []
+        self.rollback_requested = False
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append((sql, parameters))
+        if "FROM public.garden_requests" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "owner_id": UUID("77777777-7777-4777-8777-777777777777"),
+                    "property_id": UUID("22222222-2222-4222-8222-222222222222"),
+                    "status": "needing_implements",
+                }
+            )
+        if "FROM public.workflow_stages" in sql:
+            if not self.workflow_stages:
+                return _MappingsResult([])
+            return _MappingsResult(
+                [
+                    {
+                        "id": UUID("66666666-6666-4666-8666-666666666666"),
+                        "stage_key": "installation",
+                        "evidence": {},
+                        "started_at": None,
+                    },
+                    {
+                        "id": UUID("99999999-9999-4999-8999-999999999999"),
+                        "stage_key": "crop_allocation",
+                        "evidence": {},
+                        "started_at": None,
+                    },
+                ]
+            )
+        if "FROM public.installations" in sql:
+            return _MappingsResult()
+        if "INSERT INTO public.installations" in sql:
+            return _MappingsResult({"id": UUID("33333333-3333-4333-8333-333333333333")})
+        if "UPDATE public.garden_requests" in sql:
+            return _MappingsResult(
+                {
+                    "id": UUID("11111111-1111-4111-8111-111111111111"),
+                    "status": "implements_installed",
+                }
+            )
+        if "UPDATE public.workflow_stages" in sql:
+            return _MappingsResult({"id": parameters["stage_id"]})
+        return _MappingsResult()
+
+
+class _GardenInstallationEngine(_InspectionEngine):
+    def begin(self):
+        return _GardenInstallationTransaction(self.connection)
+
+
+class _GardenInstallationTransaction(_InspectionTransaction):
+    async def __aexit__(self, exc_type, _value, _traceback):
+        self.connection.rollback_requested = exc_type is not None
+        return False
+
+
+@pytest.mark.asyncio
+async def test_postgres_installation_commits_request_installation_and_workflow_together() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenInstallationConnection()
+    gateway.engine = _GardenInstallationEngine(connection)
+
+    request, installation = await gateway.complete_garden_installation(
+        UUID("11111111-1111-4111-8111-111111111111"),
+        UUID("22222222-2222-4222-8222-222222222222"),
+        {
+            "install_type": "raised_bed",
+            "size_m2": 8,
+            "capacity_units": 2,
+            "installed_at": "2026-09-20",
+            "photos": ["https://example.test/install.jpg"],
+            "maintenance_notes": None,
+        },
+        UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        token="admin-token",
+    )
+
+    sql = [statement for statement, _ in connection.statements]
+    workflow_updates = [
+        parameters["status"]
+        for statement, parameters in connection.statements
+        if "UPDATE public.workflow_stages" in statement
+    ]
+    assert request["status"] == "implements_installed"
+    assert installation["id"] == UUID("33333333-3333-4333-8333-333333333333")
+    assert workflow_updates == ["completed", "ready"]
+    assert sql.index(next(s for s in sql if "UPDATE public.garden_requests" in s)) < sql.index(
+        next(s for s in sql if "UPDATE public.workflow_stages" in s)
+    )
+    assert connection.rollback_requested is False
+
+
+@pytest.mark.asyncio
+async def test_postgres_installation_rolls_back_when_workflow_stage_is_missing() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    connection = _GardenInstallationConnection(workflow_stages=False)
+    gateway.engine = _GardenInstallationEngine(connection)
+
+    with pytest.raises(AppError) as raised:
+        await gateway.complete_garden_installation(
+            UUID("11111111-1111-4111-8111-111111111111"),
+            UUID("22222222-2222-4222-8222-222222222222"),
+            {"installed_at": "2026-09-20", "photos": []},
+            UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            token="admin-token",
+        )
+
+    assert raised.value.code == "workflow_stage_missing"
+    assert connection.rollback_requested is True
+    assert not any("INSERT INTO public.installations" in sql for sql, _ in connection.statements)
+
+
 class _GardenPlantingTransaction(_InspectionTransaction):
     async def __aexit__(self, exc_type, _value, _traceback):
         self.connection.rollback_requested = exc_type is not None
@@ -628,9 +752,7 @@ async def test_postgres_allocation_commits_property_batches_request_and_workflow
     assert "FOR UPDATE" in next(
         sql for sql in sql_statements if "FROM public.garden_requests" in sql
     )
-    assert "FOR UPDATE" in next(
-        sql for sql in sql_statements if "FROM public.installations" in sql
-    )
+    assert "FOR UPDATE" in next(sql for sql in sql_statements if "FROM public.installations" in sql)
     assert len(inserted_batches) == 1
     assert len(activity_inserts) == 2
     assert workflow_updates == ["completed", "ready"]
