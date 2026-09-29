@@ -226,6 +226,9 @@ class PostgresGateway:
                 )
             values = dict(assessment)
             values.update(report_id=report_id, assignment_id=assignment_id)
+            values["submitted_at"] = coerce_column_value(
+                values["submitted_at"], "timestamp with time zone"
+            )
             for key in ("risks", "measurements", "score_breakdown"):
                 values[key] = json.dumps(values[key])
             row = (

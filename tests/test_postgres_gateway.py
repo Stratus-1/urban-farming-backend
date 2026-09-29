@@ -438,6 +438,16 @@ async def test_inspection_submission_saves_report_and_assignment_in_one_transact
     assignment_update = next(
         sql for sql, _ in connection.statements if "UPDATE public.inspection_assignments" in sql
     )
+    report_update_parameters = next(
+        parameters
+        for sql, parameters in connection.statements
+        if "UPDATE public.inspection_reports" in sql
+    )
+    assignment_update_parameters = next(
+        parameters
+        for sql, parameters in connection.statements
+        if "UPDATE public.inspection_assignments" in sql
+    )
     assert "FOR UPDATE" in next(
         sql for sql, _ in connection.statements if "FROM public.inspection_reports" in sql
     )
@@ -448,6 +458,9 @@ async def test_inspection_submission_saves_report_and_assignment_in_one_transact
     )
     assert result["assessment_status"] == "submitted_for_approval"
     assert connection.assignment["status"] == "completed"
+    expected_submitted_at = datetime(2026, 9, 29, 10, tzinfo=UTC)
+    assert report_update_parameters["submitted_at"] == expected_submitted_at
+    assert assignment_update_parameters["submitted_at"] == expected_submitted_at
     assert gateway.engine.begin_calls == 1
 
 
