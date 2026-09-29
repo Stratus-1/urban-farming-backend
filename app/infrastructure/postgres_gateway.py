@@ -262,10 +262,16 @@ class PostgresGateway:
             """
         )
         async with self.engine.connect() as connection:
-            rows = (await connection.execute(
-                statement,
-                {"tenant_scope_refs": tenant_scope_refs, "row_limit": limit},
-            )).mappings().all()
+            rows = (
+                (
+                    await connection.execute(
+                        statement,
+                        {"tenant_scope_refs": tenant_scope_refs, "row_limit": limit},
+                    )
+                )
+                .mappings()
+                .all()
+            )
         return [dict(row) for row in rows]
 
     async def insert(
@@ -399,49 +405,61 @@ class PostgresGateway:
         async with self.engine.begin() as connection:
             await self._set_identity(connection, token)
             assignment = (
-                await connection.execute(
-                    text(
-                        "SELECT id, inspector_id, garden_id, status, started_at "
-                        "FROM public.inspection_assignments "
-                        "WHERE id = :assignment_id AND inspector_id = :inspector_id "
-                        "FOR UPDATE"
-                    ),
-                    {"assignment_id": assignment_id, "inspector_id": inspector_id},
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id, inspector_id, garden_id, status, started_at "
+                            "FROM public.inspection_assignments "
+                            "WHERE id = :assignment_id AND inspector_id = :inspector_id "
+                            "FOR UPDATE"
+                        ),
+                        {"assignment_id": assignment_id, "inspector_id": inspector_id},
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             if assignment is None:
                 raise AppError(
                     404, "inspection_assignment_not_found", "Inspection assignment not found"
                 )
 
             report = (
-                await connection.execute(
-                    text(
-                        "SELECT * FROM public.inspection_reports "
-                        "WHERE assignment_id = :assignment_id LIMIT 1"
-                    ),
-                    {"assignment_id": assignment_id},
-                )
-            ).mappings().first()
-            if report is None:
-                report = (
+                (
                     await connection.execute(
                         text(
-                            "INSERT INTO public.inspection_reports "
-                            "(assignment_id, inspector_id, garden_id, overall_status, notes, "
-                            "gps_lat, gps_lng, started_at) "
-                            "VALUES (:assignment_id, :inspector_id, :garden_id, 'pending', "
-                            "NULL, :gps_lat, :gps_lng, now()) RETURNING *"
+                            "SELECT * FROM public.inspection_reports "
+                            "WHERE assignment_id = :assignment_id LIMIT 1"
                         ),
-                        {
-                            "assignment_id": assignment_id,
-                            "inspector_id": inspector_id,
-                            "garden_id": assignment["garden_id"],
-                            "gps_lat": gps_lat,
-                            "gps_lng": gps_lng,
-                        },
+                        {"assignment_id": assignment_id},
                     )
-                ).mappings().one()
+                )
+                .mappings()
+                .first()
+            )
+            if report is None:
+                report = (
+                    (
+                        await connection.execute(
+                            text(
+                                "INSERT INTO public.inspection_reports "
+                                "(assignment_id, inspector_id, garden_id, overall_status, notes, "
+                                "gps_lat, gps_lng, started_at) "
+                                "VALUES (:assignment_id, :inspector_id, :garden_id, 'pending', "
+                                "NULL, :gps_lat, :gps_lng, now()) RETURNING *"
+                            ),
+                            {
+                                "assignment_id": assignment_id,
+                                "inspector_id": inspector_id,
+                                "garden_id": assignment["garden_id"],
+                                "gps_lat": gps_lat,
+                                "gps_lng": gps_lng,
+                            },
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
 
             await connection.execute(
                 text(
@@ -729,6 +747,7 @@ class PostgresGateway:
         request_id: UUID,
         property_id: UUID,
         payload: dict[str, Any],
+        actor_id: UUID,
         *,
         token: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -756,6 +775,32 @@ class PostgresGateway:
                     "request_changed",
                     "The request changed while installation was being recorded. "
                     "Refresh and try again.",
+                )
+
+            workflow_stages = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT stage.id, stage.stage_key, stage.evidence, stage.started_at "
+                            "FROM public.workflow_stages AS stage "
+                            "INNER JOIN public.operational_workflows AS workflow "
+                            "ON workflow.id = stage.workflow_id "
+                            "WHERE workflow.garden_request_id = :request_id "
+                            "AND stage.stage_key IN ('installation', 'crop_allocation') "
+                            "FOR UPDATE OF stage"
+                        ),
+                        {"request_id": request_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            stages_by_key = {stage["stage_key"]: stage for stage in workflow_stages}
+            if "installation" not in stages_by_key or "crop_allocation" not in stages_by_key:
+                raise AppError(
+                    409,
+                    "workflow_stage_missing",
+                    "Workflow stages installation and crop_allocation are required.",
                 )
 
             existing = (
@@ -832,6 +877,44 @@ class PostgresGateway:
                 .mappings()
                 .one()
             )
+            for stage_key, status, next_action in (
+                ("installation", "completed", None),
+                ("crop_allocation", "ready", "Allocate approved crops to the installed garden."),
+            ):
+                stage = stages_by_key[stage_key]
+                evidence = stage["evidence"] if isinstance(stage["evidence"], dict) else {}
+                if stage_key == "installation":
+                    evidence = {
+                        **evidence,
+                        "installation_id": str(installation["id"]),
+                        "installed_at": payload["installed_at"],
+                        "photos": payload["photos"],
+                    }
+                next_action_assignment = ", next_action = :next_action" if next_action else ""
+                stage_update = await connection.execute(
+                    text(
+                        "UPDATE public.workflow_stages SET status = :status, "
+                        "owner_user_id = :actor_id, evidence = CAST(:evidence AS jsonb), "
+                        "started_at = COALESCE(started_at, now()), "
+                        "completed_at = CASE WHEN :status = 'completed' THEN now() "
+                        "ELSE completed_at END, updated_at = now()"
+                        + next_action_assignment
+                        + " WHERE id = :stage_id RETURNING id"
+                    ),
+                    {
+                        "status": status,
+                        "actor_id": actor_id,
+                        "evidence": json.dumps(evidence),
+                        "next_action": next_action,
+                        "stage_id": stage["id"],
+                    },
+                )
+                if not stage_update.mappings().first():
+                    raise AppError(
+                        409,
+                        "workflow_stage_update_failed",
+                        f"Could not advance {stage_key}.",
+                    )
             return dict(updated_request), dict(installation)
 
     async def complete_garden_planting(
@@ -944,16 +1027,20 @@ class PostgresGateway:
 
             batch_ids = [str(batch["id"]) for batch in batches]
             updated_batches = (
-                await connection.execute(
-                    text(
-                        "UPDATE public.crop_batches SET status = 'growing', "
-                        "planted_at = :planted_at "
-                        "WHERE installation_id = :installation_id "
-                        "AND status IN ('planned', 'growing') RETURNING id"
-                    ),
-                    {"planted_at": planted_at, "installation_id": installation["id"]},
+                (
+                    await connection.execute(
+                        text(
+                            "UPDATE public.crop_batches SET status = 'growing', "
+                            "planted_at = :planted_at "
+                            "WHERE installation_id = :installation_id "
+                            "AND status IN ('planned', 'growing') RETURNING id"
+                        ),
+                        {"planted_at": planted_at, "installation_id": installation["id"]},
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             if len(updated_batches) != len(batches):
                 raise AppError(
                     409,
@@ -1097,9 +1184,7 @@ class PostgresGateway:
                 },
             )
             if not property_result.mappings().first():
-                raise AppError(
-                    409, "property_changed", "The linked property could not be updated."
-                )
+                raise AppError(409, "property_changed", "The linked property could not be updated.")
 
             installation = (
                 (

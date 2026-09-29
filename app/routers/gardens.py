@@ -682,6 +682,7 @@ async def complete_garden_installation(
             request_id,
             UUID(str(garden_request["property_id"])),
             installation_payload,
+            user.id,
             token=user.access_token,
         )
         rows = [installation]
@@ -730,25 +731,26 @@ async def complete_garden_installation(
                 "The request changed while installation was being recorded. Refresh and try again.",
             )
         updated_request = updated[0]
-    await advance_workflow_stage(
-        gateway,
-        user,
-        request_id,
-        "installation",
-        "completed",
-        evidence={
-            "installation_id": rows[0]["id"],
-            "installed_at": payload.installed_at.isoformat(),
-            "photos": payload.photos,
-        },
-    )
-    await ready_workflow_stage(
-        gateway,
-        user,
-        request_id,
-        "crop_allocation",
-        next_action="Allocate approved crops to the installed garden.",
-    )
+    if not isinstance(gateway, PostgresGateway):
+        await advance_workflow_stage(
+            gateway,
+            user,
+            request_id,
+            "installation",
+            "completed",
+            evidence={
+                "installation_id": rows[0]["id"],
+                "installed_at": payload.installed_at.isoformat(),
+                "photos": payload.photos,
+            },
+        )
+        await ready_workflow_stage(
+            gateway,
+            user,
+            request_id,
+            "crop_allocation",
+            next_action="Allocate approved crops to the installed garden.",
+        )
     return {"request": updated_request, "installation": rows[0]}
 
 
