@@ -100,6 +100,11 @@ def _is_admin(user: Any) -> bool:
     return user.has_any_role("admin", "operator")
 
 
+def _require_buyer_profile_access(table: str, user: Any) -> None:
+    if table == "buyer_profiles" and not user.has_any_role("buyer", "admin", "operator"):
+        raise AppError(403, "buyer_profile_forbidden", "Buyer account access is required")
+
+
 def _scoped_filters(table: str, filters: dict[str, Any], user: Any) -> dict[str, Any]:
     if _is_admin(user):
         return filters
@@ -113,6 +118,7 @@ def _scoped_filters(table: str, filters: dict[str, Any], user: Any) -> dict[str,
 
 @router.post("/query")
 async def query_data(payload: DataQuery, gateway: GatewayDep, user: CurrentUserDep) -> dict:
+    _require_buyer_profile_access(payload.table, user)
     if payload.table in ADMIN_READ_TABLES and not _is_admin(user):
         raise AppError(403, "table_forbidden", "Administrator access is required")
     filters = _scoped_filters(payload.table, payload.filters, user)
@@ -139,6 +145,7 @@ async def query_data(payload: DataQuery, gateway: GatewayDep, user: CurrentUserD
 
 @router.post("/mutate")
 async def mutate_data(payload: DataMutation, gateway: GatewayDep, user: CurrentUserDep) -> dict:
+    _require_buyer_profile_access(payload.table, user)
     allowed = payload.table in USER_MUTATION_TABLES or (
         _is_admin(user) and payload.table in ADMIN_MUTATION_TABLES
     )
