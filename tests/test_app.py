@@ -18,6 +18,7 @@ def test_openapi_exposes_migrated_domain_contracts() -> None:
 
     assert "/api/v1/gardens/overview" in paths
     assert "/api/v1/garden-requests/{request_id}/allocation" in paths
+    assert "/api/v1/garden-requests/{request_id}/inspection-schedule" in paths
     assert "/api/v1/inspections/reports/{report_id}/photos" in paths
     assert "/api/v1/inspections/reports/{report_id}/assessment" in paths
     assert "/api/v1/inspections/reports/{report_id}/submit-for-approval" in paths

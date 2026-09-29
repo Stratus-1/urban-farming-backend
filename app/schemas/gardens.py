@@ -34,6 +34,16 @@ class GardenRequestStatusUpdate(APIModel):
     admin_notes: str | None = Field(default=None, max_length=4000)
 
 
+class GardenInspectionSchedule(APIModel):
+    inspector_id: UUID
+    due_date: date
+    scheduled_for: datetime
+    priority: Literal["low", "medium", "high", "urgent"] = "medium"
+    focus_areas: list[str] = Field(default_factory=list, max_length=12)
+    focus_brief: str | None = Field(default=None, max_length=2000)
+    access_instructions: str | None = Field(default=None, max_length=2000)
+
+
 class GardenAllocationCreate(APIModel):
     allocated_plants: list[str] = Field(min_length=1, max_length=50)
     inspection_notes: str | None = Field(default=None, max_length=4000)

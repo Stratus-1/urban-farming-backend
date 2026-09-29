@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 
@@ -151,6 +152,105 @@ class _InspectionEngine:
 
     def begin(self):
         return _InspectionTransaction(self.connection)
+
+
+class _SchedulingConnection:
+    def __init__(self) -> None:
+        self.request_id = UUID("e1b1d0c2-96cd-4cc2-a9b6-4f34e7614dd1")
+        self.owner_id = UUID("6102934a-e389-4ad9-ac92-2b70d2f99157")
+        self.property_id = UUID("11b1c03a-4f2c-4210-a025-0ae4d905a7aa")
+        self.assignment_id = UUID("6aa1470a-973c-45a8-9d37-95cb97c6f68c")
+        self.inspector_id = UUID("952addb5-b2dd-4aa6-a18e-9ba8e5131bdf")
+        self.request = {
+            "id": self.request_id,
+            "owner_id": self.owner_id,
+            "property_id": None,
+            "status": "submitted",
+            "label": "Courtyard garden",
+            "address": "1 Test Road",
+            "city": "Cape Town",
+            "lat": None,
+            "lng": None,
+            "available_space_m2": 12,
+            "sunlight_hours": 6,
+            "details": {"notes": "Grower notes"},
+            "admin_notes": None,
+        }
+        self.assignment = None
+        self.statements: list[tuple[str, object]] = []
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        parameters = parameters or {}
+        self.statements.append((sql, parameters))
+        if "SELECT * FROM public.garden_requests" in sql:
+            return _MappingsResult(dict(self.request))
+        if "FROM public.inspectors" in sql:
+            return _MappingsResult({"id": self.inspector_id})
+        if "INSERT INTO public.properties" in sql:
+            self.request["property_id"] = self.property_id
+            return _MappingsResult({"id": self.property_id})
+        if "SELECT owner_id FROM public.properties" in sql:
+            return _MappingsResult({"owner_id": self.owner_id})
+        if "FROM public.inspection_assignments" in sql:
+            return _MappingsResult(dict(self.assignment) if self.assignment else None)
+        if "INSERT INTO public.inspection_assignments" in sql:
+            self.assignment = {
+                **parameters,
+                "id": self.assignment_id,
+                "status": "pending",
+            }
+            return _MappingsResult(dict(self.assignment))
+        if "UPDATE public.inspection_assignments" in sql:
+            self.assignment.update(parameters)
+            return _MappingsResult(dict(self.assignment))
+        if "UPDATE public.garden_requests" in sql:
+            self.request.update(parameters)
+            self.request["details"] = json.loads(parameters["details"])
+            return _MappingsResult(dict(self.request))
+        return _MappingsResult()
+
+
+class _SchedulingEngine(_InspectionEngine):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_inspection_schedule_retries_reuse_linked_property_and_assignment() -> None:
+    from app.infrastructure.postgres_gateway import PostgresGateway
+
+    connection = _SchedulingConnection()
+    gateway = object.__new__(PostgresGateway)
+    gateway.engine = _SchedulingEngine(connection)
+    gateway._column_types = {"garden_requests": {"details": "jsonb"}}
+    schedule = {
+        "inspector_id": connection.inspector_id,
+        "due_date": date(2026, 9, 30),
+        "scheduled_for": datetime(2026, 9, 30, 7, tzinfo=UTC),
+        "priority": "high",
+        "focus_areas": ["Water access"],
+        "focus_brief": "Check irrigation",
+        "access_instructions": None,
+        "admin_notes": "FOCUS AREAS: Water access",
+    }
+
+    first = await gateway.schedule_garden_request_inspection(
+        connection.request_id, schedule, connection.owner_id, token=None
+    )
+    second = await gateway.schedule_garden_request_inspection(
+        connection.request_id, schedule, connection.owner_id, token=None
+    )
+
+    assert first["request"]["property_id"] == connection.property_id
+    assert second["assignment"]["id"] == connection.assignment_id
+    assert sum("INSERT INTO public.properties" in sql for sql, _ in connection.statements) == 1
+    assert (
+        sum("INSERT INTO public.inspection_assignments" in sql for sql, _ in connection.statements)
+        == 1
+    )
+    assert second["request"]["details"]["inspectionAssignment"]["assignmentId"] == str(
+        connection.assignment_id
+    )
 
 
 @pytest.mark.asyncio
