@@ -168,7 +168,11 @@ async def mutate_data(payload: DataMutation, gateway: GatewayDep, user: CurrentU
                 "installation_completion_required",
                 "Installation completion must use the evidence-checked workflow endpoint.",
             )
-        rows = await gateway.update(payload.table, payload.payload, filters=filters, token=token)
+        mutation_payload = payload.payload
+        owner_column = OWNER_COLUMNS.get(payload.table)
+        if owner_column and not _is_admin(user):
+            mutation_payload = {**mutation_payload, owner_column: str(user.id)}
+        rows = await gateway.update(payload.table, mutation_payload, filters=filters, token=token)
     else:
         mutation_payload = payload.payload
         if payload.table == "installations":
