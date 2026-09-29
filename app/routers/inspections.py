@@ -15,6 +15,7 @@ from app.schemas.inspections import (
     InspectionSubmit,
 )
 from app.services.gardens import as_list
+from app.services.inspection_evidence import inspection_evidence_gaps
 from app.services.inspection_scoring import score_assessment
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
@@ -581,7 +582,6 @@ async def submit_for_approval(
             "inspection_checklist_missing",
             "The inspection checklist is not ready. Reopen the inspection and try again.",
         )
-    required_photo_items = [item for item in checklist_items if item.get("requires_photo") is True]
     photos = as_list(
         await gateway.select(
             "inspection_photos",
@@ -589,17 +589,17 @@ async def submit_for_approval(
             filters={"report_id": str(report_id)},
         )
     )
-    photo_item_ids = {str(photo.get("checklist_item_id")) for photo in photos}
-    incomplete_required = [
-        item
-        for item in required_photo_items
-        if item.get("result") in {None, "na"} or str(item.get("id")) not in photo_item_ids
-    ]
-    if incomplete_required:
+    missing_results, missing_photos = inspection_evidence_gaps(checklist_items, photos)
+    if missing_results or missing_photos:
+        problems = []
+        if missing_results:
+            problems.append(f"complete results for: {', '.join(missing_results)}")
+        if missing_photos:
+            problems.append(f"attach photos for: {', '.join(missing_photos)}")
         raise AppError(
             422,
             "inspection_evidence_incomplete",
-            "Complete every required inspection item and attach its site photo before submitting.",
+            f"Before submitting, {'; '.join(problems)}.",
         )
     submitted_at = datetime.now(UTC).isoformat()
     overall_status = {

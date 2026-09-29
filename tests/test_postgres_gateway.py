@@ -369,11 +369,23 @@ class _SubmissionConnection:
                 [
                     {
                         "id": UUID("00000000-0000-0000-0000-000000000001"),
+                        "category": "Garden condition",
+                        "item_name": "Full garden view",
                         "requires_photo": True,
                         "result": "pass",
                     }
                 ]
             )
+        if "FROM public.inspection_photos" in sql:
+            photos = []
+            if not self.missing_photo:
+                photos.append(
+                    {
+                        "checklist_item_id": None,
+                        "photo_type": "full_garden_view",
+                    }
+                )
+            return _MappingsResult(photos)
         if "UPDATE public.inspection_reports" in sql:
             self.report.update(parameters)
             self.report["assessment_status"] = "submitted_for_approval"
@@ -382,9 +394,6 @@ class _SubmissionConnection:
             self.assignment.update(parameters)
             self.assignment["status"] = "completed"
         return _MappingsResult()
-
-    async def scalar(self, _statement, _parameters=None):
-        return self.missing_photo
 
 
 @pytest.mark.asyncio

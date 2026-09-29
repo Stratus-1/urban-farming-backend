@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.errors import AppError
 from app.infrastructure.data_gateway import ensure_rpc_allowed, ensure_table_allowed
+from app.services.inspection_evidence import inspection_evidence_gaps
 
 IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 FILTER_OPERATORS = {
@@ -182,7 +183,7 @@ class PostgresGateway:
                 (
                     await connection.execute(
                         text(
-                            "SELECT id, requires_photo, result "
+                            "SELECT id, category, item_name, requires_photo, result "
                             "FROM public.inspection_checklist_items "
                             "WHERE report_id=:report_id FOR UPDATE"
                         ),
@@ -198,28 +199,30 @@ class PostgresGateway:
                     "inspection_checklist_missing",
                     "The inspection checklist is not ready. Reopen the inspection and try again.",
                 )
-            if any(item["requires_photo"] and item["result"] in (None, "na") for item in items):
-                raise AppError(
-                    422,
-                    "inspection_evidence_incomplete",
-                    "Complete every required inspection item and attach its site photo "
-                    "before submitting.",
+            photos = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT checklist_item_id, photo_type "
+                            "FROM public.inspection_photos WHERE report_id=:report_id"
+                        ),
+                        {"report_id": report_id},
+                    )
                 )
-            missing = await connection.scalar(
-                text(
-                    "SELECT EXISTS (SELECT 1 FROM public.inspection_checklist_items i "
-                    "WHERE i.report_id=:report_id AND i.requires_photo AND NOT EXISTS "
-                    "(SELECT 1 FROM public.inspection_photos p WHERE p.report_id=i.report_id "
-                    "AND p.checklist_item_id=i.id))"
-                ),
-                {"report_id": report_id},
+                .mappings()
+                .all()
             )
-            if missing:
+            missing_results, missing_photos = inspection_evidence_gaps(items, photos)
+            if missing_results or missing_photos:
+                problems = []
+                if missing_results:
+                    problems.append(f"complete results for: {', '.join(missing_results)}")
+                if missing_photos:
+                    problems.append(f"attach photos for: {', '.join(missing_photos)}")
                 raise AppError(
                     422,
                     "inspection_evidence_incomplete",
-                    "Complete every required inspection item and attach its site photo "
-                    "before submitting.",
+                    f"Before submitting, {'; '.join(problems)}.",
                 )
             values = dict(assessment)
             values.update(report_id=report_id, assignment_id=assignment_id)
