@@ -183,7 +183,7 @@ class PostgresGateway:
                 (
                     await connection.execute(
                         text(
-                            "SELECT id, category, item_name, requires_photo, result "
+                            "SELECT id, category, item_name, requires_photo, result, comment "
                             "FROM public.inspection_checklist_items "
                             "WHERE report_id=:report_id FOR UPDATE"
                         ),

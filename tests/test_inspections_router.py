@@ -237,7 +237,8 @@ async def test_submit_for_approval_persists_assessment_notes_and_gps() -> None:
             "category": category,
             "item_name": category,
             "requires_photo": True,
-            "result": "pass",
+            "result": "na" if category == "Crop health" else "pass",
+            "comment": "No crops planted yet" if category == "Crop health" else None,
         }
         for index, (category, _) in enumerate(required_checks, start=1)
     ]
@@ -285,8 +286,11 @@ async def test_submit_for_approval_requires_checklist_evidence_photos() -> None:
     gateway.checklist_items = [
         {
             "id": "00000000-0000-0000-0000-000000000001",
+            "category": "Garden condition",
+            "item_name": "Full garden view",
             "requires_photo": True,
             "result": "pass",
+            "comment": None,
         }
     ]
 
