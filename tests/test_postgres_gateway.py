@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 
@@ -179,6 +180,13 @@ class _SchedulingConnection:
             "admin_notes": None,
         }
         self.assignment = None
+        self.workflow_stage_ids = {
+            key: UUID(int=index)
+            for index, key in enumerate(
+                ("property_details", "preliminary_assessment", "inspector_visit"),
+                start=1,
+            )
+        }
         self.statements: list[tuple[str, object]] = []
 
     async def execute(self, statement, parameters=None):
@@ -206,9 +214,26 @@ class _SchedulingConnection:
         if "UPDATE public.inspection_assignments" in sql:
             self.assignment.update(parameters)
             return _MappingsResult(dict(self.assignment))
+        if "FROM public.workflow_stages AS stage" in sql:
+            stage_id = self.workflow_stage_ids[parameters["stage_key"]]
+            return _MappingsResult(
+                {"id": stage_id, "evidence": {}, "started_at": None, "completed_at": None}
+            )
+        if "UPDATE public.workflow_stages" in sql:
+            return _MappingsResult({"id": parameters["stage_id"]})
         if "UPDATE public.garden_requests" in sql:
-            self.request.update(parameters)
-            self.request["details"] = json.loads(parameters["details"])
+            for key in (
+                "property_id",
+                "admin_notes",
+                "details",
+                "status",
+                "reviewed_by",
+                "reviewed_at",
+            ):
+                match = re.search(rf'"{key}" = (?:CAST\()?:(request_value_\d+)', sql)
+                if match:
+                    value = parameters[match.group(1)]
+                    self.request[key] = json.loads(value) if key == "details" else value
             return _MappingsResult(dict(self.request))
         return _MappingsResult()
 
@@ -224,7 +249,15 @@ async def test_inspection_schedule_retries_reuse_linked_property_and_assignment(
     connection = _SchedulingConnection()
     gateway = object.__new__(PostgresGateway)
     gateway.engine = _SchedulingEngine(connection)
-    gateway._column_types = {"garden_requests": {"details": "jsonb"}}
+    gateway._column_types = {
+        "garden_requests": {
+            "details": "jsonb",
+            "property_id": "uuid",
+            "status": "USER-DEFINED",
+            "reviewed_by": "uuid",
+            "reviewed_at": "timestamp with time zone",
+        }
+    }
     schedule = {
         "inspector_id": connection.inspector_id,
         "due_date": date(2026, 9, 30),
@@ -244,6 +277,7 @@ async def test_inspection_schedule_retries_reuse_linked_property_and_assignment(
     )
 
     assert first["request"]["property_id"] == connection.property_id
+    assert first["request"]["status"] == "inspection_scheduled"
     assert second["assignment"]["id"] == connection.assignment_id
     assert sum("INSERT INTO public.properties" in sql for sql, _ in connection.statements) == 1
     assert (
@@ -253,6 +287,16 @@ async def test_inspection_schedule_retries_reuse_linked_property_and_assignment(
     assert second["request"]["details"]["inspectionAssignment"]["assignmentId"] == str(
         connection.assignment_id
     )
+    workflow_updates = [
+        parameters
+        for statement, parameters in connection.statements
+        if "UPDATE public.workflow_stages" in statement
+    ]
+    assert len(workflow_updates) == 6
+    inspector_stage_evidence = json.loads(workflow_updates[2]["evidence"])
+    assert inspector_stage_evidence["assignment_id"] == str(connection.assignment_id)
+    property_stage_evidence = json.loads(workflow_updates[0]["evidence"])
+    assert property_stage_evidence["property_id"] == str(connection.property_id)
 
 
 @pytest.mark.asyncio
@@ -816,7 +860,11 @@ async def test_request_status_report_and_workflow_stages_advance_in_one_transact
             {
                 "stage_key": "approval",
                 "status": "completed",
-                "evidence": {"decision": "approved", "report_id": str(report_id)},
+                "evidence": {
+                    "decision": "approved",
+                    "report_id": str(report_id),
+                    "property_id": request_id,
+                },
             },
             {
                 "stage_key": "installation",
@@ -843,7 +891,18 @@ async def test_request_status_report_and_workflow_stages_advance_in_one_transact
         index for index, item in enumerate(sql) if "UPDATE public.garden_requests SET" in item
     )
     assert report_update_index < request_update_index
-    assert sum("UPDATE public.workflow_stages" in item for item in sql) == 2
+    stage_parameters = [
+        parameters
+        for statement, parameters in connection.statements
+        if "UPDATE public.workflow_stages" in statement
+    ]
+    assert len(stage_parameters) == 2
+    approval_evidence = next(
+        json.loads(parameters["evidence"])
+        for parameters in stage_parameters
+        if json.loads(parameters["evidence"]).get("decision") == "approved"
+    )
+    assert approval_evidence["property_id"] == str(request_id)
 
 
 @pytest.mark.asyncio

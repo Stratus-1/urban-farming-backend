@@ -813,24 +813,125 @@ class PostgresGateway:
                 },
             }
             request_columns = await self._table_column_types("garden_requests")
-            details_value = coerce_column_value(details, request_columns.get("details"))
-            details_sql, details_bound_value = bind_value("details", details_value)
             admin_notes = schedule["admin_notes"] or request["admin_notes"]
+            now = datetime.now(UTC)
+            request_values: dict[str, Any] = {
+                "property_id": property_id,
+                "admin_notes": admin_notes,
+                "details": details,
+            }
+            if request["status"] == "submitted":
+                request_values.update(
+                    {
+                        "status": "inspection_scheduled",
+                        "reviewed_by": actor_id,
+                        "reviewed_at": now,
+                    }
+                )
+            request_assignments: list[str] = []
+            request_parameters: dict[str, Any] = {
+                "request_id": request_id,
+                "expected_status": request["status"],
+            }
+            for index, (key, value) in enumerate(request_values.items()):
+                parameter = f"request_value_{index}"
+                value = coerce_column_value(value, request_columns.get(key))
+                expression, bound_value = bind_value(parameter, value)
+                request_assignments.append(f"{quote_identifier(key)} = {expression}")
+                request_parameters[parameter] = bound_value
             result = await connection.execute(
                 text(
-                    "UPDATE public.garden_requests SET property_id = :property_id, "
-                    f"admin_notes = :admin_notes, details = {details_sql}, updated_at = now() "
-                    "WHERE id = :request_id RETURNING *"
+                    "UPDATE public.garden_requests SET "
+                    + ", ".join(request_assignments)
+                    + ", updated_at = now() WHERE id = :request_id "
+                    "AND status = :expected_status RETURNING *"
                 ),
-                {
-                    "property_id": property_id,
-                    "admin_notes": admin_notes,
-                    "details": details_bound_value,
-                    "request_id": request_id,
-                },
+                request_parameters,
             )
+            updated_request = result.mappings().first()
+            if not updated_request:
+                raise AppError(
+                    409,
+                    "request_changed",
+                    "The request changed while the inspection was being scheduled.",
+                )
+
+            workflow_stages = [
+                {
+                    "stage_key": "property_details",
+                    "status": "completed",
+                    "evidence": {"address": request["address"], "property_id": property_id},
+                    "next_action": None,
+                },
+                {
+                    "stage_key": "preliminary_assessment",
+                    "status": "completed",
+                    "evidence": {"result": "manual_review_passed", "reviewed_by": actor_id},
+                    "next_action": None,
+                },
+                {
+                    "stage_key": "inspector_visit",
+                    "status": "in_progress",
+                    "evidence": {"assignment_id": assignment_row["id"]},
+                    "next_action": "Complete the site visit and submit the inspection report.",
+                },
+            ]
+            for stage_update in workflow_stages:
+                stage = (
+                    (
+                        await connection.execute(
+                            text(
+                                "SELECT stage.id, stage.evidence, stage.started_at, "
+                                "stage.completed_at FROM public.workflow_stages AS stage "
+                                "JOIN public.operational_workflows AS workflow "
+                                "ON workflow.id = stage.workflow_id "
+                                "WHERE workflow.garden_request_id = :request_id "
+                                "AND stage.stage_key = :stage_key FOR UPDATE OF stage"
+                            ),
+                            {"request_id": request_id, "stage_key": stage_update["stage_key"]},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if stage is None:
+                    raise AppError(
+                        409,
+                        "workflow_stage_missing",
+                        f"Workflow stage {stage_update['stage_key']} is missing.",
+                    )
+                prior_evidence = stage["evidence"]
+                evidence = {
+                    **(prior_evidence if isinstance(prior_evidence, dict) else {}),
+                    **stage_update["evidence"],
+                }
+                stage_result = await connection.execute(
+                    text(
+                        "UPDATE public.workflow_stages SET status = :status, "
+                        "owner_user_id = :actor_id, evidence = CAST(:evidence AS jsonb), "
+                        "started_at = COALESCE(started_at, :now), "
+                        "completed_at = CASE WHEN :status IN ('completed', 'rejected') "
+                        "THEN COALESCE(completed_at, :now) ELSE completed_at END, "
+                        "next_action = COALESCE(:next_action, next_action) "
+                        "WHERE id = :stage_id RETURNING id"
+                    ),
+                    {
+                        "status": stage_update["status"],
+                        "actor_id": actor_id,
+                        "evidence": json.dumps(evidence, default=str),
+                        "now": now,
+                        "next_action": stage_update["next_action"],
+                        "stage_id": stage["id"],
+                    },
+                )
+                if not stage_result.mappings().first():
+                    raise AppError(
+                        409,
+                        "workflow_stage_update_failed",
+                        f"Could not advance {stage_update['stage_key']}",
+                    )
             return {
-                "request": dict(result.mappings().first()),
+                "request": dict(updated_request),
                 "assignment": dict(assignment_row),
             }
 
@@ -1061,7 +1162,7 @@ class PostgresGateway:
                     {
                         "status": stage_update["status"],
                         "actor_id": actor_id,
-                        "evidence": json.dumps(evidence),
+                        "evidence": json.dumps(evidence, default=str),
                         "now": now,
                         "next_action": stage_update.get("next_action"),
                         "stage_id": stage["id"],
