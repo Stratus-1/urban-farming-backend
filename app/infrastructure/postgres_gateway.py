@@ -777,6 +777,28 @@ class PostgresGateway:
                     "Refresh and try again.",
                 )
 
+            approved_report = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT id FROM public.inspection_reports "
+                            "WHERE garden_id = :property_id "
+                            "AND assessment_status = 'approved' "
+                            "LIMIT 1 FOR UPDATE"
+                        ),
+                        {"property_id": property_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if approved_report is None:
+                raise AppError(
+                    409,
+                    "inspection_approval_required",
+                    "An approved site assessment is required.",
+                )
+
             workflow_stages = (
                 (
                     await connection.execute(
