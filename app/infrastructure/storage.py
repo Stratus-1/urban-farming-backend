@@ -44,4 +44,4 @@ class GCSStorageGateway:
             await asyncio.to_thread(do_upload)
         except Exception as error:
             raise AppError(502, "storage_error", "Could not upload the inspection photo") from error
-        return f"gs://{self.bucket.name}/{path}"
+        return f"gs://{self.bucket_name}/{path}"
