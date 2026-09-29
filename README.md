@@ -355,8 +355,13 @@ Build and deploy using the checked-in Cloud Build configuration:
 ```bash
 gcloud builds submit \
   --project=stratus-website-496818 \
-  --config=cloudbuild.yaml
+  --config=cloudbuild.yaml \
+  --substitutions=COMMIT_SHA="$(git rev-parse HEAD)"
 ```
+
+Cloud Build triggers supply `COMMIT_SHA` automatically. Manual submissions do not, so pass the
+current source commit explicitly; otherwise the image reference has an empty tag and the build
+fails before deployment.
 
 The current `cloudbuild.yaml` targets `us-central1` and service
 `urban-farming-backend-prod`.
