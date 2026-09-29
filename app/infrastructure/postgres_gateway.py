@@ -41,8 +41,10 @@ def coerce_filter_value(value: Any) -> Any:
     return value
 
 
-def bind_value(parameter: str, value: Any) -> tuple[str, Any]:
+def bind_value(parameter: str, value: Any, data_type: str | None = None) -> tuple[str, Any]:
     """Return SQL and driver-safe values for dynamically generated statements."""
+    if value is not None and data_type in {"json", "jsonb"}:
+        return f"CAST(:{parameter} AS {data_type.upper()})", json.dumps(value)
     if isinstance(value, dict):
         return f"CAST(:{parameter} AS JSONB)", json.dumps(value)
     return f":{parameter}", value
@@ -439,7 +441,9 @@ class PostgresGateway:
             for column_name in columns:
                 parameter = f"row_{row_index}_{column_name}"
                 value = coerce_column_value(row[column_name], column_types.get(column_name))
-                placeholder, bound_value = bind_value(parameter, value)
+                placeholder, bound_value = bind_value(
+                    parameter, value, column_types.get(column_name)
+                )
                 placeholders.append(placeholder)
                 parameters[parameter] = bound_value
             values_sql.append(f"({', '.join(placeholders)})")
@@ -486,7 +490,7 @@ class PostgresGateway:
         for index, (key, value) in enumerate(payload.items()):
             parameter = f"value_{index}"
             value = coerce_column_value(value, column_types.get(key))
-            placeholder, bound_value = bind_value(parameter, value)
+            placeholder, bound_value = bind_value(parameter, value, column_types.get(key))
             assignments.append(f"{quote_identifier(key)} = {placeholder}")
             parameters[parameter] = bound_value
         where_sql, filter_parameters = build_filters(filters)
@@ -836,7 +840,7 @@ class PostgresGateway:
             for index, (key, value) in enumerate(request_values.items()):
                 parameter = f"request_value_{index}"
                 value = coerce_column_value(value, request_columns.get(key))
-                expression, bound_value = bind_value(parameter, value)
+                expression, bound_value = bind_value(parameter, value, request_columns.get(key))
                 request_assignments.append(f"{quote_identifier(key)} = {expression}")
                 request_parameters[parameter] = bound_value
             result = await connection.execute(
@@ -1097,7 +1101,7 @@ class PostgresGateway:
             for index, (key, value) in enumerate(request_payload.items()):
                 parameter = f"request_value_{index}"
                 value = coerce_column_value(value, column_types.get(key))
-                expression, bound_value = bind_value(parameter, value)
+                expression, bound_value = bind_value(parameter, value, column_types.get(key))
                 request_assignments.append(f"{quote_identifier(key)} = {expression}")
                 request_parameters[parameter] = bound_value
             request_result = await connection.execute(

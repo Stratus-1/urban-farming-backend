@@ -61,6 +61,18 @@ def test_bind_value_serializes_json_objects_for_asyncpg() -> None:
     assert value == '{"trackingState": "requested", "plants": ["Lettuce", "Basil"]}'
 
 
+def test_bind_value_serializes_jsonb_arrays_without_converting_postgres_arrays() -> None:
+    risks = [{"category": "pests", "severity": "medium", "notes": "Observed"}]
+
+    placeholder, value = bind_value("risks", risks, "jsonb")
+    array_placeholder, array_value = bind_value("installation_types", ["vertical"], "ARRAY")
+
+    assert placeholder == "CAST(:risks AS JSONB)"
+    assert value == '[{"category": "pests", "severity": "medium", "notes": "Observed"}]'
+    assert array_placeholder == ":installation_types"
+    assert array_value == ["vertical"]
+
+
 def test_coerce_column_value_converts_json_temporal_strings_for_asyncpg() -> None:
     assert coerce_column_value("2026-07-14", "date") == date(2026, 7, 14)
     assert coerce_column_value("2026-07-14T07:00:00.000Z", "timestamp with time zone") == datetime(
