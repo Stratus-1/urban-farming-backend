@@ -6,13 +6,14 @@ from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 
 from app.core.errors import AppError
 from app.core.security import AdminUserDep, GatewayDep
 from app.core.tokens import mint_recovery_token
 from app.core.workload_identity import WorkloadIdentityError, verify_workload_identity
 from app.infrastructure.email import MailMessage
+from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.communications import (
     AssessmentLeadConvert,
     AssessmentLeadCreate,
@@ -151,9 +152,7 @@ async def help_center_garden_request_snapshot(
     ):
         raise HTTPException(status_code=422, detail="Tenant scope reference is invalid")
 
-    rows = await gateway.select_garden_requests_for_help_center(
-        tenant_scope_refs, limit=limit + 1
-    )
+    rows = await gateway.select_garden_requests_for_help_center(tenant_scope_refs, limit=limit + 1)
     if len(rows) > limit:
         raise HTTPException(
             status_code=503,
@@ -270,6 +269,7 @@ async def convert_assessment_lead(
     lead_id: UUID,
     payload: AssessmentLeadConvert,
     request: Request,
+    response: Response,
     gateway: GatewayDep,
     user: AdminUserDep,
 ) -> dict:
@@ -282,7 +282,7 @@ async def convert_assessment_lead(
     )
     if not lead:
         raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
-    if lead.get("status") == "converted":
+    if lead.get("status") == "converted" and not isinstance(gateway, PostgresGateway):
         raise AppError(
             409,
             "assessment_lead_already_converted",
@@ -338,39 +338,59 @@ async def convert_assessment_lead(
         "converted_by": str(user.id),
         "converted_at": datetime.now(UTC).isoformat(),
     }
-    request_rows = await gateway.insert(
-        "garden_requests",
-        {
-            "owner_id": str(grower_user["id"]),
-            "label": label,
-            "city": city,
-            "address": payload.address,
-            "available_space_m2": lead.get("available_space_m2"),
-            "sunlight_hours": lead.get("sunlight_hours"),
-            "details": details,
-            "status": status,
-            "admin_notes": payload.admin_notes or lead.get("admin_notes"),
-            "reviewed_by": str(user.id),
-            "reviewed_at": datetime.now(UTC).isoformat(),
-        },
-        token=user.access_token,
-        admin=True,
-    )
-    garden_request = request_rows[0]
-
-    update_rows = await gateway.update(
-        "assessment_leads",
-        {
-            "status": "converted",
-            "admin_notes": payload.admin_notes or lead.get("admin_notes"),
-            "reviewed_by": str(user.id),
-            "reviewed_at": datetime.now(UTC).isoformat(),
-        },
-        filters={"id": lead_id},
-        token=user.access_token,
-        admin=True,
-    )
-    updated_lead = update_rows[0] if update_rows else lead
+    admin_notes = payload.admin_notes or lead.get("admin_notes")
+    request_values = {
+        "owner_id": str(grower_user["id"]),
+        "label": label,
+        "city": city,
+        "address": payload.address,
+        "available_space_m2": lead.get("available_space_m2"),
+        "sunlight_hours": lead.get("sunlight_hours"),
+        "details": details,
+        "status": status,
+        "admin_notes": admin_notes,
+        "reviewed_by": str(user.id),
+        "reviewed_at": datetime.now(UTC).isoformat(),
+    }
+    if isinstance(gateway, PostgresGateway):
+        conversion = await gateway.convert_assessment_lead(
+            lead_id,
+            request_values,
+            user.id,
+            token=user.access_token,
+        )
+        garden_request = conversion["garden_request"]
+        updated_lead = conversion["lead"]
+        request_created = conversion["created"]
+        response.status_code = 201 if request_created else 200
+    else:
+        request_rows = await gateway.insert(
+            "garden_requests",
+            request_values,
+            token=user.access_token,
+            admin=True,
+        )
+        garden_request = request_rows[0]
+        request_created = True
+        update_rows = await gateway.update(
+            "assessment_leads",
+            {
+                "status": "converted",
+                "admin_notes": admin_notes,
+                "reviewed_by": str(user.id),
+                "reviewed_at": datetime.now(UTC).isoformat(),
+            },
+            filters={"id": lead_id},
+            token=user.access_token,
+            admin=True,
+        )
+        if not update_rows:
+            raise AppError(
+                409,
+                "assessment_lead_conversion_incomplete",
+                "The lead conversion could not be completed. Try again.",
+            )
+        updated_lead = update_rows[0]
 
     password_setup_email_sent = False
     if created_user:
@@ -413,6 +433,7 @@ async def convert_assessment_lead(
     return {
         "lead": updated_lead,
         "gardenRequest": garden_request,
+        "gardenRequestCreated": request_created,
         "userId": str(grower_user["id"]),
         "createdUser": created_user,
         "passwordSetupEmailSent": password_setup_email_sent,
