@@ -22,6 +22,7 @@ from app.schemas.gardens import (
 from app.services.gardens import (
     allocate_garden,
     as_list,
+    latest_inspection_report,
     record_care_action,
     verify_property_access,
 )
@@ -227,18 +228,11 @@ async def update_garden_request_status(
             )
         schedule_assignment_id = UUID(str(assignments[0]["id"]))
     elif target == "accepted" and current == "inspection_scheduled":
-        reports = as_list(
-            await gateway.select(
-                "inspection_reports",
-                token=user.access_token,
-                filters={"garden_id": request_row.get("property_id")},
-                order="submitted_at.desc",
-                limit=1,
-            )
-        )
-        report = next(
-            (item for item in reports if item.get("assessment_status") == "submitted_for_approval"),
-            None,
+        report = await latest_inspection_report(
+            gateway,
+            request_row.get("property_id"),
+            assessment_status="submitted_for_approval",
+            token=user.access_token,
         )
         if not report:
             raise AppError(
@@ -258,22 +252,11 @@ async def update_garden_request_status(
         report_to_approve = report
     elif target == "rejected" and current in {"submitted", "inspection_scheduled"}:
         if current == "inspection_scheduled" and request_row.get("property_id"):
-            reports = as_list(
-                await gateway.select(
-                    "inspection_reports",
-                    token=user.access_token,
-                    filters={"garden_id": request_row["property_id"]},
-                    order="submitted_at.desc",
-                    limit=1,
-                )
-            )
-            pending_report = next(
-                (
-                    item
-                    for item in reports
-                    if item.get("assessment_status") == "submitted_for_approval"
-                ),
-                None,
+            pending_report = await latest_inspection_report(
+                gateway,
+                request_row["property_id"],
+                assessment_status="submitted_for_approval",
+                token=user.access_token,
             )
             if pending_report:
                 report_to_reject = pending_report
