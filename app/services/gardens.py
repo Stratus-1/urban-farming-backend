@@ -26,6 +26,28 @@ def as_list(value: Any) -> list[dict[str, Any]]:
     return list(value)
 
 
+async def latest_inspection_report(
+    gateway: DataGateway,
+    property_id: Any,
+    *,
+    assessment_status: str,
+    token: str | None,
+) -> dict[str, Any] | None:
+    """Select the latest report in the requested state, excluding drafts before limiting."""
+    if not property_id:
+        return None
+
+    report = await gateway.select(
+        "inspection_reports",
+        token=token,
+        filters={"garden_id": property_id, "assessment_status": assessment_status},
+        order="submitted_at.desc",
+        limit=1,
+        single=True,
+    )
+    return report if isinstance(report, dict) else None
+
+
 async def verify_property_access(
     gateway: DataGateway, property_id: UUID, user: CurrentUser
 ) -> dict[str, Any]:
@@ -166,18 +188,11 @@ async def allocate_garden(
             "Complete and record the physical installation before allocating crops.",
         )
 
-    reports = as_list(
-        await gateway.select(
-            "inspection_reports",
-            token=user.access_token,
-            filters={"garden_id": request.get("property_id")},
-            order="submitted_at.desc",
-            limit=1,
-        )
-    )
-    approved_report = next(
-        (report for report in reports if report.get("assessment_status") == "approved"),
-        None,
+    approved_report = await latest_inspection_report(
+        gateway,
+        request.get("property_id"),
+        assessment_status="approved",
+        token=user.access_token,
     )
     if not approved_report:
         raise AppError(
