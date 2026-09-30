@@ -7,6 +7,7 @@ import pytest
 
 from app.core.errors import AppError
 from app.infrastructure.postgres_gateway import (
+    PostgresGateway,
     bind_value,
     build_filters,
     coerce_column_value,
@@ -91,6 +92,94 @@ def test_coerce_column_value_rejects_invalid_temporal_values() -> None:
 
     assert raised.value.status_code == 422
     assert raised.value.code == "invalid_temporal_value"
+
+
+class _AssessmentLeadConversionConnection:
+    def __init__(self, existing_request=None) -> None:
+        self.statements: list[tuple[str, object]] = []
+        self.lead = {
+            "id": UUID("54c3ee0e-6957-4eb6-84b8-3aa9f79e4980"),
+            "status": "scheduled",
+        }
+        self.existing_request = existing_request
+        self.inserted_request = None
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append((sql, parameters))
+        if "FROM public.assessment_leads" in sql:
+            return _MappingsResult(self.lead)
+        if "FROM public.garden_requests" in sql and "details->>'assessment_lead_id'" in sql:
+            return _MappingsResult(self.existing_request)
+        if "INSERT INTO public.garden_requests" in sql:
+            self.inserted_request = {
+                "id": UUID("47328853-3686-4375-8b89-cb429db77fee"),
+                "label": "Mountainside vertical wall assessment",
+                "status": "submitted",
+            }
+            return _MappingsResult(self.inserted_request)
+        if "UPDATE public.assessment_leads" in sql:
+            self.lead["status"] = "converted"
+            return _MappingsResult(self.lead)
+        return _MappingsResult()
+
+
+@pytest.mark.asyncio
+async def test_assessment_lead_conversion_recovers_existing_request_without_duplicate() -> None:
+    connection = _AssessmentLeadConversionConnection(
+        {
+            "id": UUID("47328853-3686-4375-8b89-cb429db77fee"),
+            "label": "Mountainside vertical wall assessment",
+            "status": "inspection_scheduled",
+        }
+    )
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    gateway.engine = _SchedulingEngine(connection)
+    gateway._column_types = {"garden_requests": {"details": "jsonb"}}
+
+    result = await gateway.convert_assessment_lead(
+        UUID("54c3ee0e-6957-4eb6-84b8-3aa9f79e4980"),
+        {
+            "owner_id": "owner-1",
+            "label": "Mountainside vertical wall assessment",
+            "details": {"assessment_lead_id": "54c3ee0e-6957-4eb6-84b8-3aa9f79e4980"},
+            "status": "submitted",
+        },
+        UUID("5d7bcaf5-942d-4113-bdad-466202395978"),
+        token=None,
+    )
+
+    assert result["created"] is False
+    assert result["garden_request"]["status"] == "inspection_scheduled"
+    assert result["lead"]["status"] == "converted"
+    assert not any("INSERT INTO public.garden_requests" in sql for sql, _ in connection.statements)
+    assert any("UPDATE public.assessment_leads" in sql for sql, _ in connection.statements)
+
+
+@pytest.mark.asyncio
+async def test_assessment_lead_conversion_creates_and_marks_lead_atomically() -> None:
+    connection = _AssessmentLeadConversionConnection()
+    engine = _SchedulingEngine(connection)
+    gateway = PostgresGateway.__new__(PostgresGateway)
+    gateway.engine = engine
+    gateway._column_types = {"garden_requests": {"details": "jsonb"}}
+
+    result = await gateway.convert_assessment_lead(
+        UUID("54c3ee0e-6957-4eb6-84b8-3aa9f79e4980"),
+        {
+            "owner_id": "owner-1",
+            "label": "Mountainside vertical wall assessment",
+            "details": {"assessment_lead_id": "54c3ee0e-6957-4eb6-84b8-3aa9f79e4980"},
+            "status": "submitted",
+        },
+        UUID("5d7bcaf5-942d-4113-bdad-466202395978"),
+        token=None,
+    )
+
+    assert engine.begin_calls == 1
+    assert result["created"] is True
+    assert result["garden_request"]["status"] == "submitted"
+    assert result["lead"]["status"] == "converted"
 
 
 class _MappingsResult:

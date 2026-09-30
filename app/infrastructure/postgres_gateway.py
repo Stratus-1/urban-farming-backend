@@ -945,6 +945,110 @@ class PostgresGateway:
                 "assignment": dict(assignment_row),
             }
 
+    async def convert_assessment_lead(
+        self,
+        lead_id: UUID,
+        garden_request_payload: dict[str, Any],
+        actor_id: UUID,
+        *,
+        token: str | None,
+    ) -> dict[str, Any]:
+        """Create or recover a lead's garden request atomically and idempotently."""
+        request_columns = await self._table_column_types("garden_requests")
+        now = datetime.now(UTC)
+        async with self.engine.begin() as connection:
+            await self._set_identity(connection, token)
+            lead = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT * FROM public.assessment_leads WHERE id = :lead_id FOR UPDATE"
+                        ),
+                        {"lead_id": lead_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if lead is None:
+                raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
+
+            existing_request = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT * FROM public.garden_requests "
+                            "WHERE details->>'assessment_lead_id' = :lead_id "
+                            "ORDER BY created_at ASC LIMIT 1 FOR UPDATE"
+                        ),
+                        {"lead_id": str(lead_id)},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+
+            if existing_request is None:
+                columns = list(garden_request_payload)
+                values_sql: list[str] = []
+                parameters: dict[str, Any] = {}
+                for index, (key, value) in enumerate(garden_request_payload.items()):
+                    parameter = f"request_value_{index}"
+                    value = coerce_column_value(value, request_columns.get(key))
+                    expression, bound_value = bind_value(parameter, value, request_columns.get(key))
+                    values_sql.append(expression)
+                    parameters[parameter] = bound_value
+                column_sql = ", ".join(quote_identifier(column) for column in columns)
+                garden_request = (
+                    (
+                        await connection.execute(
+                            text(
+                                f"INSERT INTO public.garden_requests ({column_sql}) "
+                                f"VALUES ({', '.join(values_sql)}) RETURNING *"
+                            ),
+                            parameters,
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                created = True
+            else:
+                garden_request = dict(existing_request)
+                created = False
+
+            updated_lead = (
+                (
+                    await connection.execute(
+                        text(
+                            "UPDATE public.assessment_leads SET status = 'converted', "
+                            "admin_notes = :admin_notes, reviewed_by = :actor_id, "
+                            "reviewed_at = :reviewed_at WHERE id = :lead_id RETURNING *"
+                        ),
+                        {
+                            "admin_notes": garden_request_payload.get("admin_notes"),
+                            "actor_id": actor_id,
+                            "reviewed_at": now,
+                            "lead_id": lead_id,
+                        },
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if updated_lead is None or garden_request is None:
+                raise AppError(
+                    409,
+                    "assessment_lead_conversion_incomplete",
+                    "The lead conversion could not be completed. Try again.",
+                )
+
+            return {
+                "lead": dict(updated_lead),
+                "garden_request": dict(garden_request),
+                "created": created,
+            }
+
     async def update_garden_request_workflow(
         self,
         request_id: UUID,
