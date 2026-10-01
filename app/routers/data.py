@@ -154,6 +154,31 @@ async def mutate_data(payload: DataMutation, gateway: GatewayDep, user: CurrentU
     filters = _scoped_filters(payload.table, payload.filters, user)
     token = user.access_token
     if payload.operation == "delete":
+        if payload.table == "properties" and "id" in filters:
+            property_id = filters["id"]
+            assignment_rows = await gateway.select(
+                "inspection_assignments",
+                columns="id",
+                filters={"garden_id": property_id},
+                token=token,
+                admin=True,
+                limit=1,
+            )
+            report_rows = await gateway.select(
+                "inspection_reports",
+                columns="id",
+                filters={"garden_id": property_id},
+                token=token,
+                admin=True,
+                limit=1,
+            )
+            if assignment_rows or report_rows:
+                raise AppError(
+                    409,
+                    "property_has_inspection_history",
+                    "This garden has inspection history and cannot be deleted. "
+                    "Resolve or archive the inspection first.",
+                )
         await gateway.delete(payload.table, filters=filters, token=token)
         return {"data": None}
     if payload.payload is None:

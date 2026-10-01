@@ -22,6 +22,30 @@ class MutationGateway:
         self.filters = filters
         return [{"id": "garden-1", **payload}]
 
+    async def select(
+        self,
+        table: str,
+        *,
+        token: str | None = None,
+        admin: bool = False,
+        columns: str = "*",
+        filters: dict[str, Any] | None = None,
+        order: str | None = None,
+        limit: int | None = None,
+        single: bool = False,
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def delete(
+        self,
+        table: str,
+        *,
+        filters: dict[str, Any],
+        token: str | None = None,
+        admin: bool = False,
+    ) -> None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_grower_cannot_transfer_owned_record_with_update_payload() -> None:
@@ -41,3 +65,24 @@ async def test_grower_cannot_transfer_owned_record_with_update_payload() -> None
         "owner_id": str(USER_ID),
         "details": {"plants": ["lettuce"]},
     }
+
+
+class InspectionHistoryGateway(MutationGateway):
+    async def select(self, table: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return [{"id": "inspection-1"}] if table == "inspection_reports" else []
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_delete_property_with_inspection_history() -> None:
+    gateway = InspectionHistoryGateway()
+    user = CurrentUser(id=USER_ID, roles={"admin"}, access_token="test-token")
+    payload = DataMutation(
+        operation="delete",
+        table="properties",
+        filters={"id": "property-1"},
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await mutate_data(payload, gateway, user)
+
+    assert getattr(exc_info.value, "code", None) == "property_has_inspection_history"
