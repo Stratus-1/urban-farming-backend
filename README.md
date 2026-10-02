@@ -24,8 +24,8 @@ database for authentication, workflows, orders, or other user-facing transaction
 Production URLs:
 
 - Frontend: `https://urban-farming-web-prod-737493449401.us-central1.run.app`
-- API: `https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app`
-- OpenAPI: `https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app/docs`
+- API: `https://urban-farming-backend-prod-737493449401.us-central1.run.app`
+- OpenAPI: `https://urban-farming-backend-prod-737493449401.us-central1.run.app/docs`
 
 Current rollout state:
 
@@ -322,7 +322,7 @@ Before switching production traffic, reconcile at minimum:
 The frontend browser client uses `VITE_API_URL`:
 
 ```env
-VITE_API_URL=https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app
+VITE_API_URL=https://urban-farming-backend-prod-737493449401.us-central1.run.app
 ```
 
 The backend must allow the exact deployed frontend origin:
@@ -392,7 +392,7 @@ The runtime service account needs:
 ### Verify a deployment
 
 ```bash
-API_URL='https://urban-farming-backend-prod-tgfjkr5dga-uc.a.run.app'
+API_URL='https://urban-farming-backend-prod-737493449401.us-central1.run.app'
 
 curl -fsS "$API_URL/health/live"
 curl -fsS "$API_URL/health/ready"
