@@ -23,15 +23,17 @@ database for authentication, workflows, orders, or other user-facing transaction
 
 Production URLs:
 
-- Frontend: `https://urban-farming-web-prod-737493449401.us-central1.run.app`
+- Canonical frontend: `https://urbanfarmingofficial.com` (also `https://www.urbanfarmingofficial.com`)
+- Cloud Run frontend diagnostic URL: `https://urban-farming-web-prod-737493449401.us-central1.run.app`
 - API: `https://urban-farming-backend-prod-737493449401.us-central1.run.app`
 - OpenAPI: `https://urban-farming-backend-prod-737493449401.us-central1.run.app/docs`
 
-Current rollout state:
+Current rollout state (2026-10-12):
 
 - Native auth, JWT sessions, Cloud SQL, and Cloud Run deployment are in place.
-- Production email/password signup is live. Google sign-in is disabled until its production OAuth origins and code-exchange flow are verified.
-- The production API uses the verified `a.run.app` URL above. Recheck Cloud Run for staging URLs before using them.
+- Production email/password signup is live. Google sign-in remains subject to the configured production OAuth origins and server-side code-exchange flow.
+- Frontend revision `urban-farming-web-prod-00058-pzj` and backend revision `urban-farming-backend-prod-00038-9cx` serve 100% traffic in `stratus-website-496818` / `us-central1`.
+- Use the canonical domain for user-facing checks and the `a.run.app` URLs for service diagnostics.
 
 ## Architecture
 
