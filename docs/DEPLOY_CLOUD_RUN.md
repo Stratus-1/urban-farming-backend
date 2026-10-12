@@ -84,8 +84,11 @@ curl -X POST https://SERVICE_URL/api/v1/auth/signup \
 2. Configure these redirect URIs on the Google OAuth client:
    - `http://localhost:8080/auth/google/callback`
    - `http://localhost:8080/buyer-auth/google/callback`
-   - `https://urban-farming-web-prod-737493449401.us-central1.run.app/auth/google/callback`
-   - `https://urban-farming-web-prod-737493449401.us-central1.run.app/buyer-auth/google/callback`
+   - `https://urbanfarmingofficial.com/auth/google/callback`
+   - `https://urbanfarmingofficial.com/buyer-auth/google/callback`
+   - `https://www.urbanfarmingofficial.com/auth/google/callback`
+   - `https://www.urbanfarmingofficial.com/buyer-auth/google/callback`
+   - Keep the Cloud Run `a.run.app` callback URLs only if they are explicitly enabled in the OAuth client for diagnostics.
 3. Confirm the staging frontend URL from Cloud Run before adding staging callback URIs. Set
    `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the production Cloud Run backend service and
    `VITE_GOOGLE_CLIENT_ID` in the frontend.

@@ -41,9 +41,19 @@ All 18 SQL migrations from the frontend repository are copied into
 `database/cloud_sql/0000_supabase_compatibility.sql` supplies the minimal `auth` and `storage`
 objects needed to replay those migrations on Cloud SQL.
 
-## Remaining frontend cutover work
+## Current boundary status — 2026-10-12
 
-The React application still calls Supabase directly. Move one domain hook at a time to this API,
-starting with write operations, then dashboard reads, then admin reporting. Do not remove Supabase
-RLS or direct-query code until traffic and reconciliation show that the corresponding API route is
-stable.
+The production React frontend uses the FastAPI backend as its runtime data boundary. The Supabase
+references retained in the frontend are historical schema migrations and generated types; they are
+not a license to add new browser-side Supabase reads or writes. Validate any suspected legacy seam
+with a source search before changing it.
+
+Remaining work is an audit and cleanup task:
+
+1. identify any runtime Supabase imports or direct storage/RPC calls that remain in frontend or Inspector code;
+2. move a confirmed write seam to a backend endpoint first;
+3. move confirmed dashboard/reporting reads next;
+4. remove the obsolete runtime seam only after the backend route has production evidence.
+
+Do not remove the preserved migration files or generated types; they document the schema and
+compatibility layer.
