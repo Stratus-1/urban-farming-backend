@@ -12,6 +12,16 @@ from app.core.errors import AppError
 from app.core.security import AdminUserDep, GatewayDep
 from app.core.tokens import mint_recovery_token
 from app.core.workload_identity import WorkloadIdentityError, verify_workload_identity
+from app.email.templates import (
+    account_setup,
+    assessment_received,
+    assessment_status_update,
+    contact_received,
+    garden_request_received,
+    inspector_application_received,
+    inspector_application_status,
+    password_reset,
+)
 from app.infrastructure.email import MailMessage
 from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.communications import (
@@ -99,6 +109,14 @@ async def contact(payload: ContactMessageCreate, request: Request, gateway: Gate
         )
     except Exception:
         logger.exception("contact_notification_failed", contact_id=str(rows[0].get("id")))
+    try:
+        await email.send(
+            contact_received(name=payload.name, subject=payload.subject).to_message(
+                str(payload.email)
+            )
+        )
+    except Exception:
+        logger.exception("contact_receipt_failed", contact_id=str(rows[0].get("id")))
     return rows[0]
 
 
@@ -226,6 +244,14 @@ async def create_assessment_lead(
         )
     except Exception:
         logger.exception("assessment_lead_notification_failed", lead_id=str(lead.get("id")))
+    try:
+        await request.app.state.email.send(
+            assessment_received(name=payload.full_name, suburb=payload.suburb).to_message(
+                str(payload.email)
+            )
+        )
+    except Exception:
+        logger.exception("assessment_lead_receipt_failed", lead_id=str(lead.get("id")))
     return lead
 
 
@@ -275,6 +301,12 @@ async def create_inspector_application(
         )
     except Exception:
         logger.exception("inspector_application_notification_failed", application_id=str(result.get("id")))
+    try:
+        await request.app.state.email.send(
+            inspector_application_received(name=payload.full_name).to_message(str(payload.email))
+        )
+    except Exception:
+        logger.exception("inspector_application_receipt_failed", application_id=str(result.get("id")))
     return result
 
 
@@ -307,6 +339,7 @@ async def list_inspector_applications(gateway: GatewayDep, user: AdminUserDep) -
 async def update_inspector_application(
     application_id: UUID,
     payload: dict,
+    request: Request,
     gateway: GatewayDep,
     user: AdminUserDep,
 ) -> dict:
@@ -314,6 +347,15 @@ async def update_inspector_application(
     status = payload.get("status")
     if status not in allowed_statuses:
         raise AppError(422, "invalid_application_status", "Inspector application status is invalid")
+    existing = await gateway.select(
+        "inspector_applications",
+        filters={"id": application_id},
+        token=user.access_token,
+        admin=True,
+        single=True,
+    )
+    if not existing:
+        raise AppError(404, "inspector_application_not_found", "Inspector application not found")
     rows = await gateway.update(
         "inspector_applications",
         {
@@ -328,6 +370,22 @@ async def update_inspector_application(
     )
     if not rows:
         raise AppError(404, "inspector_application_not_found", "Inspector application not found")
+    if existing.get("status") != status and status in {"under_review", "approved", "rejected"}:
+        try:
+            await request.app.state.email.send(
+                inspector_application_status(
+                    name=str(existing.get("full_name") or "there"),
+                    status=status,
+                    notes=payload.get("admin_notes"),
+                    app_url=request.app.state.settings.app_base_url.rstrip("/"),
+                ).to_message(str(existing["email"]))
+            )
+        except Exception:
+            logger.exception(
+                "inspector_application_status_email_failed",
+                application_id=str(application_id),
+                status=status,
+            )
     return rows[0]
 
 
@@ -348,9 +406,19 @@ async def list_assessment_leads(gateway: GatewayDep, user: AdminUserDep) -> dict
 async def update_assessment_lead(
     lead_id: UUID,
     payload: AssessmentLeadStatusUpdate,
+    request: Request,
     gateway: GatewayDep,
     user: AdminUserDep,
 ) -> dict:
+    existing = await gateway.select(
+        "assessment_leads",
+        filters={"id": lead_id},
+        token=user.access_token,
+        admin=True,
+        single=True,
+    )
+    if not existing:
+        raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
     rows = await gateway.update(
         "assessment_leads",
         {
@@ -364,7 +432,73 @@ async def update_assessment_lead(
     )
     if not rows:
         raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
+    if existing.get("status") != payload.status and payload.status in {
+        "contacted", "scheduled", "assessed", "not_viable", "closed"
+    }:
+        try:
+            await request.app.state.email.send(
+                assessment_status_update(
+                    name=str(existing.get("full_name") or "there"),
+                    suburb=str(existing.get("suburb") or ""),
+                    status=payload.status,
+                    notes=payload.admin_notes,
+                    app_url=request.app.state.settings.app_base_url.rstrip("/"),
+                ).to_message(str(existing["email"]))
+            )
+        except Exception:
+            logger.exception("assessment_status_email_failed", lead_id=str(lead_id), status=payload.status)
     return rows[0]
+
+
+@router.post("/admin/assessment-leads/{lead_id}/send-sign-in-link")
+async def send_assessment_lead_sign_in_link(
+    lead_id: UUID,
+    request: Request,
+    gateway: GatewayDep,
+    user: AdminUserDep,
+) -> dict:
+    """Send an admin-triggered recovery link to the account matching an assessment lead."""
+    lead = await gateway.select(
+        "assessment_leads",
+        filters={"id": lead_id},
+        token=user.access_token,
+        admin=True,
+        single=True,
+    )
+    if not lead:
+        raise AppError(404, "assessment_lead_not_found", "Assessment lead not found")
+
+    auth_store = getattr(request.app.state, "auth_store", None)
+    if auth_store is None:
+        raise AppError(
+            501,
+            "native_auth_required",
+            "Account recovery requires native authentication",
+        )
+    account = await auth_store.get_user_by_email(str(lead["email"]))
+    if not account:
+        raise AppError(404, "assessment_lead_account_not_found", "No account matches this lead")
+
+    settings = request.app.state.settings
+    app_url = settings.app_base_url.rstrip("/")
+    app_origin = f"{urlsplit(app_url).scheme}://{urlsplit(app_url).netloc}"
+    if app_origin not in settings.allowed_origins:
+        raise AppError(
+            503,
+            "account_recovery_unavailable",
+            "Account recovery link is not configured",
+        )
+
+    token = mint_recovery_token(settings, UUID(str(account["id"])), account.get("email"))
+    recovery_url = f"{app_url}/auth?token={quote(token, safe='')}&type=recovery"
+    await request.app.state.email.send(
+        password_reset(
+            name=str(lead.get("full_name") or "there"),
+            reset_url=recovery_url,
+        ).to_message(str(account["email"]))
+    )
+    logger.info("assessment_lead_sign_in_link_sent", lead_id=str(lead_id), admin_id=str(user.id))
+    return {"sent": True, "email": account["email"]}
 
 
 @router.post("/admin/assessment-leads/{lead_id}/convert", status_code=201)
@@ -507,19 +641,11 @@ async def convert_assessment_lead(
             recovery_url = f"{app_url}/auth?token={quote(token, safe='')}&type=recovery"
             try:
                 await request.app.state.email.send(
-                    MailMessage(
-                        to=str(lead["email"]),
-                        subject="Finish setting up your Urban Farming account",
-                        text=(
-                            f"Hi {lead.get('full_name') or 'there'},\n\n"
-                            "We have opened a grower account so you can follow the garden "
-                            "assessment request you submitted. Set your password using the "
-                            "secure link below. It expires in 30 minutes.\n\n"
-                            f"{recovery_url}\n\n"
-                            "If you did not submit an assessment request, you can ignore "
-                            "this email."
-                        ),
-                    )
+                    account_setup(
+                        name=str(lead.get("full_name") or "there"),
+                        setup_url=recovery_url,
+                        context="the garden assessment request you submitted",
+                    ).to_message(str(lead["email"]))
                 )
                 password_setup_email_sent = True
             except Exception:
@@ -577,15 +703,11 @@ async def garden_request_notification(
         )
     )
     await email_gateway.send(
-        MailMessage(
-            to=str(payload.email),
-            subject=f"We received your garden request for {payload.garden_name}",
-            text=(
-                f"Hi {payload.full_name or 'there'},\n\n"
-                f"We received your request for {payload.garden_name}. "
-                "Our team will inspect the site and follow up before anything goes live."
-            ),
-        )
+        garden_request_received(
+            name=payload.full_name or "there",
+            garden_name=payload.garden_name,
+            app_url=settings.app_base_url.rstrip("/"),
+        ).to_message(str(payload.email))
     )
     try:
         await send_push_to_audience(

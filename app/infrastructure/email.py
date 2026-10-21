@@ -41,11 +41,35 @@ class EmailGateway:
         def send_sync() -> None:
             with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=15) as smtp:
                 smtp.starttls()
+                smtp.ehlo()
                 if self.settings.smtp_user and self.settings.smtp_password:
-                    smtp.login(self.settings.smtp_user, self.settings.smtp_password)
+                    password = self.settings.smtp_password
+                    if self.settings.smtp_host.casefold() == "smtp.gmail.com":
+                        # Google displays app passwords in four-character groups;
+                        # copied values may contain spaces that SMTP must not receive.
+                        password = "".join(password.split())
+                    if (
+                        self.settings.smtp_host.casefold() == "smtp.gmail.com"
+                        and "PLAIN" in smtp.esmtp_features.get("auth", "").upper().split()
+                    ):
+                        credentials = (
+                            f"\x00{self.settings.smtp_user}\x00{password}"
+                        )
+                        smtp.auth(
+                            "PLAIN",
+                            lambda _challenge=None: credentials,
+                        )
+                    else:
+                        smtp.login(self.settings.smtp_user, password)
                 smtp.send_message(email)
 
         try:
             await asyncio.to_thread(send_sync)
+        except smtplib.SMTPAuthenticationError as error:
+            raise AppError(
+                502,
+                "email_authentication_failed",
+                "The email provider rejected SMTP authentication",
+            ) from error
         except (OSError, smtplib.SMTPException) as error:
             raise AppError(502, "email_delivery_failed", "Email delivery failed") from error
