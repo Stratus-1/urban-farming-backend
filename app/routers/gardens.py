@@ -4,10 +4,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import structlog
 from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from app.core.errors import AppError
 from app.core.security import AdminUserDep, CurrentUserDep, GatewayDep
+from app.email.templates import garden_request_received, garden_status
 from app.infrastructure.postgres_gateway import PostgresGateway
 from app.schemas.gardens import (
     CareActionCreate,
@@ -29,6 +31,7 @@ from app.services.gardens import (
 from app.services.workflows import advance_workflow_stage, ready_workflow_stage
 
 router = APIRouter(tags=["gardens"])
+logger = structlog.get_logger(__name__)
 ALLOWED_INSTALL_PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic"}
 MAX_INSTALL_PHOTO_BYTES = 12 * 1024 * 1024
 
@@ -133,14 +136,38 @@ async def garden_overview(gateway: GatewayDep, user: CurrentUserDep) -> dict:
 
 @router.post("/garden-requests", status_code=201)
 async def create_garden_request(
-    payload: GardenRequestCreate, gateway: GatewayDep, user: CurrentUserDep
+    payload: GardenRequestCreate, request: Request, gateway: GatewayDep, user: CurrentUserDep
 ) -> dict:
+    details = dict(payload.details)
+    if user.email and not details.get("email"):
+        # Keep a notification address snapshot so later status emails do not need
+        # elevated access to the authentication user's private record.
+        details["email"] = user.email
     rows = await gateway.insert(
         "garden_requests",
-        {"owner_id": str(user.id), **payload.model_dump(mode="json", exclude_none=True)},
+        {
+            "owner_id": str(user.id),
+            **payload.model_dump(mode="json", exclude_none=True),
+            "details": details,
+        },
         token=user.access_token,
     )
-    return rows[0]
+    garden_request = rows[0]
+    recipient = details.get("email")
+    if recipient:
+        try:
+            await request.app.state.email.send(
+                garden_request_received(
+                    name=str(user.user_metadata.get("full_name") or "there"),
+                    garden_name=str(garden_request.get("label") or payload.label),
+                    app_url=request.app.state.settings.app_base_url.rstrip("/"),
+                ).to_message(str(recipient))
+            )
+        except Exception:
+            logger.exception(
+                "garden_request_received_email_failed", request_id=str(garden_request.get("id"))
+            )
+    return garden_request
 
 
 @router.get("/garden-requests")
@@ -190,6 +217,7 @@ async def schedule_garden_request_inspection(
 async def update_garden_request_status(
     request_id: UUID,
     payload: GardenRequestStatusUpdate,
+    request: Request,
     gateway: GatewayDep,
     user: AdminUserDep,
 ) -> dict:
@@ -329,7 +357,7 @@ async def update_garden_request_status(
             **({"admin_notes": payload.admin_notes} if payload.admin_notes is not None else {}),
         }
         if isinstance(gateway, PostgresGateway):
-            return await gateway.update_garden_request_workflow(
+            updated = await gateway.update_garden_request_workflow(
                 request_id,
                 current,
                 update_payload,
@@ -337,6 +365,8 @@ async def update_garden_request_status(
                 [],
                 token=user.access_token,
             )
+            await _send_garden_status_email(request, user, request_row, updated, payload)
+            return updated
         rows = await gateway.update(
             "garden_requests",
             update_payload,
@@ -347,6 +377,7 @@ async def update_garden_request_status(
             raise AppError(
                 409, "request_changed", "The request changed while activation was being recorded."
             )
+        await _send_garden_status_email(request, user, request_row, rows[0], payload)
         return rows[0]
     elif target == "cancelled" and current not in {"live", "rejected", "cancelled"}:
         pass
@@ -440,7 +471,7 @@ async def update_garden_request_status(
         }
 
     if isinstance(gateway, PostgresGateway):
-        return await gateway.update_garden_request_workflow(
+        updated = await gateway.update_garden_request_workflow(
             request_id,
             current,
             request_payload,
@@ -450,6 +481,8 @@ async def update_garden_request_status(
             report_update=report_update,
             token=user.access_token,
         )
+        await _send_garden_status_email(request, user, request_row, updated, payload)
+        return updated
 
     rows = await gateway.update(
         "garden_requests",
@@ -575,7 +608,69 @@ async def update_garden_request_status(
             "skipped",
             evidence={"decision": "cancelled", "rationale": payload.admin_notes},
         )
+    await _send_garden_status_email(request, user, request_row, rows[0], payload)
     return rows[0]
+
+
+async def _send_garden_status_email(
+    request: Request,
+    user: CurrentUserDep,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    payload: GardenRequestStatusUpdate,
+) -> None:
+    details = before.get("details") if isinstance(before.get("details"), dict) else {}
+    recipient = details.get("email") or user.email
+    if not recipient or before.get("status") == after.get("status"):
+        return
+    note = (
+        payload.admin_notes.strip() if payload.admin_notes and payload.admin_notes.strip() else None
+    )
+    try:
+        await request.app.state.email.send(
+            garden_status(
+                name=str(details.get("name") or "there"),
+                garden_name=str(before.get("label") or "your garden request"),
+                status=str(after.get("status") or payload.status),
+                details=note or _garden_status_detail(str(after.get("status") or payload.status)),
+                app_url=request.app.state.settings.app_base_url.rstrip("/"),
+            ).to_message(str(recipient))
+        )
+    except Exception:
+        logger.exception("garden_status_email_failed", request_id=str(before.get("id")))
+
+
+def _garden_status_detail(status: str) -> str:
+    return {
+        "inspection_scheduled": (
+            "Our team has arranged the next step for your growing space. "
+            "We will contact you with visit details."
+        ),
+        "accepted": (
+            "Your garden request has been approved. Our team will coordinate installation with you."
+        ),
+        "needing_implements": (
+            "Preparation for your garden installation is underway. Our team will keep you updated."
+        ),
+        "implements_installed": (
+            "The garden infrastructure has been installed. We are preparing the next growing steps."
+        ),
+        "seeds": (
+            "Your garden is moving through planting preparation. "
+            "We will update you as it progresses."
+        ),
+        "final_install": (
+            "The final garden setup is underway. We will let you know when it is ready."
+        ),
+        "live": "Your garden is active. Sign in to follow its growing progress.",
+        "rejected": (
+            "After reviewing the request, we cannot move forward with this garden at this time. "
+            "Reply to this email if you would like to discuss it."
+        ),
+        "cancelled": (
+            "This garden request has been cancelled. Reply to this email if you need help."
+        ),
+    }.get(status, "There is an update to your garden request.")
 
 
 @router.post("/garden-requests/{request_id}/installation/photos", status_code=201)
