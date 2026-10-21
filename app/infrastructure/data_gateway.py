@@ -90,6 +90,8 @@ ALLOWED_TABLES = PUBLIC_TABLES | {
     "inspection_checklist_items",
     "inspection_photos",
     "inspection_reports",
+    "inspector_applications",
+    "inspector_application_options",
     "inspectors",
     "installations",
     "newsletter_subscriptions",

@@ -22,6 +22,7 @@ from app.schemas.communications import (
     GardenRequestNotification,
     HelpCenterGardenRequestCase,
     HelpCenterGardenRequestSnapshot,
+    InspectorApplicationCreate,
     NewsletterSignup,
     SignupNotification,
 )
@@ -226,6 +227,108 @@ async def create_assessment_lead(
     except Exception:
         logger.exception("assessment_lead_notification_failed", lead_id=str(lead.get("id")))
     return lead
+
+
+@router.post("/inspector-applications", status_code=201)
+async def create_inspector_application(
+    payload: InspectorApplicationCreate, request: Request, gateway: GatewayDep
+) -> dict:
+    option_rows = await gateway.select(
+        "inspector_application_options", token=None, filters={"active": True}
+    )
+    valid_options = {
+        (row["category"], row["value"])
+        for row in (option_rows if isinstance(option_rows, list) else [])
+    }
+    if ("availability", payload.availability) not in valid_options:
+        raise AppError(422, "invalid_application_option", "Availability option is invalid")
+    if ("transport_access", payload.transport_access) not in valid_options:
+        raise AppError(422, "invalid_application_option", "Transport option is invalid")
+    for category, values, message in (
+        ("growing_system", payload.growing_systems, "Growing system option is invalid"),
+        ("inspection_experience", payload.inspection_experience, "Inspection experience option is invalid"),
+        ("crop_site_knowledge", payload.crop_and_site_knowledge, "Crop and site knowledge option is invalid"),
+    ):
+        if any((category, value) not in valid_options for value in values):
+            raise AppError(422, "invalid_application_option", message)
+    application = await gateway.insert(
+        "inspector_applications",
+        payload.model_dump(mode="json", exclude_none=True),
+        token=None,
+        admin=True,
+    )
+    result = application[0]
+    try:
+        await request.app.state.email.send(
+            MailMessage(
+                to=request.app.state.settings.admin_email,
+                reply_to=str(payload.email),
+                subject=f"New inspector application: {payload.full_name}",
+                text=(
+                    f"Applicant: {payload.full_name}\nEmail: {payload.email}\n"
+                    f"Location: {payload.city}, {payload.region}\n"
+                    f"Current role: {payload.current_role}\n"
+                    f"Growing experience: {payload.years_growing_experience} years\n\n"
+                    f"Motivation:\n{payload.motivation}"
+                ),
+            )
+        )
+    except Exception:
+        logger.exception("inspector_application_notification_failed", application_id=str(result.get("id")))
+    return result
+
+
+@router.get("/inspector-application-options")
+async def list_inspector_application_options(gateway: GatewayDep) -> dict:
+    rows = await gateway.select(
+        "inspector_application_options",
+        token=None,
+        filters={"active": True},
+        order="category.asc,sort_order.asc,label.asc",
+    )
+    items = rows if isinstance(rows, list) else []
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/admin/inspector-applications")
+async def list_inspector_applications(gateway: GatewayDep, user: AdminUserDep) -> dict:
+    rows = await gateway.select(
+        "inspector_applications",
+        token=user.access_token,
+        admin=True,
+        order="created_at.desc",
+        limit=100,
+    )
+    items = rows if isinstance(rows, list) else []
+    return {"items": items, "count": len(items)}
+
+
+@router.patch("/admin/inspector-applications/{application_id}")
+async def update_inspector_application(
+    application_id: UUID,
+    payload: dict,
+    gateway: GatewayDep,
+    user: AdminUserDep,
+) -> dict:
+    allowed_statuses = {"pending", "under_review", "approved", "rejected"}
+    status = payload.get("status")
+    if status not in allowed_statuses:
+        raise AppError(422, "invalid_application_status", "Inspector application status is invalid")
+    rows = await gateway.update(
+        "inspector_applications",
+        {
+            "status": status,
+            "admin_notes": payload.get("admin_notes"),
+            "reviewed_by": str(user.id),
+            "reviewed_at": datetime.now(UTC).isoformat(),
+        },
+        filters={"id": application_id},
+        token=user.access_token,
+        admin=True,
+    )
+    if not rows:
+        raise AppError(404, "inspector_application_not_found", "Inspector application not found")
+    return rows[0]
 
 
 @router.get("/admin/assessment-leads")

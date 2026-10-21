@@ -53,6 +53,26 @@ class AssessmentLeadCreate(APIModel):
     source: str = Field(default="assessment_page", max_length=80)
 
 
+class InspectorApplicationCreate(APIModel):
+    full_name: str = Field(min_length=2, max_length=160)
+    email: EmailStr
+    phone: str = Field(min_length=7, max_length=40)
+    city: str = Field(min_length=2, max_length=120)
+    region: str = Field(min_length=2, max_length=120)
+    current_role: str = Field(min_length=2, max_length=160)
+    years_growing_experience: int = Field(ge=0, le=80)
+    growing_systems: list[str] = Field(min_length=1, max_length=12)
+    inspection_experience: list[str] = Field(min_length=1, max_length=20)
+    crop_and_site_knowledge: list[str] = Field(min_length=1, max_length=20)
+    availability: str = Field(min_length=1, max_length=80)
+    transport_access: str = Field(min_length=1, max_length=80)
+    smartphone_access: bool
+    gps_and_photo_ready: bool
+    safety_ready: bool
+    motivation: str = Field(min_length=20, max_length=4000)
+    source: str = Field(default="inspector_application", max_length=80)
+
+
 class AssessmentLeadStatusUpdate(APIModel):
     status: Literal[
         "new", "contacted", "scheduled", "assessed", "converted", "not_viable", "closed"
