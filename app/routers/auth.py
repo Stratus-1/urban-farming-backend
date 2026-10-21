@@ -5,6 +5,7 @@ from uuid import UUID
 import bcrypt
 import httpx
 import jwt
+import structlog
 from fastapi import APIRouter, Header, Request
 from jwt import PyJWKClient
 
@@ -17,9 +18,10 @@ from app.core.tokens import (
     mint_recovery_token,
     mint_refresh_token,
 )
+from app.email.templates import password_changed, welcome
+from app.email.templates import password_reset as password_reset_email
 from app.infrastructure.auth_store import NativeAuthStore
 from app.infrastructure.data_gateway import DataGateway
-from app.infrastructure.email import MailMessage
 from app.schemas.auth import (
     GoogleSignInRequest,
     LoginRequest,
@@ -32,6 +34,7 @@ from app.schemas.auth import (
 from app.schemas.common import MessageResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = structlog.get_logger(__name__)
 
 _PASSTHROUGH_STATUSES = {400, 401, 403, 404, 409, 422, 429}
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
@@ -327,43 +330,55 @@ async def _load_roles(gateway: DataGateway, token: str, user_id: str) -> list[st
 @router.post("/signup", status_code=201)
 async def signup(payload: SignupRequest, request: Request, gateway: GatewayDep) -> dict:
     if _uses_native_store(_settings(request)):
-        return await _native_signup(payload, request)
-    # The handle_new_user() trigger reads `role` from the metadata and provisions
-    # profiles, user_roles, grower_stats, user_settings (and inspectors) rows.
-    params = {"redirect_to": str(payload.redirect_to)} if payload.redirect_to else None
-    data = await _gotrue(
-        request,
-        "POST",
-        "signup",
-        json={
-            "email": payload.email,
-            "password": payload.password,
-            "data": {
-                "full_name": payload.full_name,
-                "role": payload.role,
-                "founding_member": True,
-                "member_badge": "Founding Member",
-                "beginner_guide_unlocked": True,
-                "priority_workshop_access": True,
-                "giveaway_entry": True,
-            },
-        },
-        params=params,
-    )
-    # With email confirmation enabled GoTrue returns the bare user object;
-    # otherwise it returns a full session envelope.
-    session = data if data.get("access_token") else None
-    user = data.get("user") if session else data
-    if session:
-        roles = await _load_roles(gateway, session["access_token"], user["id"])
+        result = await _native_signup(payload, request)
     else:
-        roles = [payload.role]
-    return {
-        "user": user,
-        "session": session,
-        "roles": roles,
-        "confirmation_required": session is None,
-    }
+        # The handle_new_user() trigger reads `role` from the metadata and provisions
+        # profiles, user_roles, grower_stats, user_settings (and inspectors) rows.
+        params = {"redirect_to": str(payload.redirect_to)} if payload.redirect_to else None
+        data = await _gotrue(
+            request,
+            "POST",
+            "signup",
+            json={
+                "email": payload.email,
+                "password": payload.password,
+                "data": {
+                    "full_name": payload.full_name,
+                    "role": payload.role,
+                    "founding_member": True,
+                    "member_badge": "Founding Member",
+                    "beginner_guide_unlocked": True,
+                    "priority_workshop_access": True,
+                    "giveaway_entry": True,
+                },
+            },
+            params=params,
+        )
+        session = data if data.get("access_token") else None
+        user = data.get("user") if session else data
+        roles = (
+            await _load_roles(gateway, session["access_token"], user["id"])
+            if session
+            else [payload.role]
+        )
+        result = {
+            "user": user,
+            "session": session,
+            "roles": roles,
+            "confirmation_required": session is None,
+        }
+    try:
+        await request.app.state.email.send(
+            welcome(
+                name=payload.full_name,
+                role=payload.role,
+                app_url=_settings(request).app_base_url.rstrip("/"),
+                confirmation_required=bool(result.get("confirmation_required")),
+            ).to_message(str(payload.email))
+        )
+    except Exception:
+        logger.exception("welcome_email_failed", role=payload.role)
+    return result
 
 
 @router.post("/login")
@@ -439,6 +454,16 @@ async def google_sign_in(payload: GoogleSignInRequest, request: Request) -> dict
         await store.ensure_provisioned(
             UUID(str(user["id"])), full_name=claims.get("name"), role=payload.role
         )
+        try:
+            await request.app.state.email.send(
+                welcome(
+                    name=str(claims.get("name") or "there"),
+                    role=payload.role,
+                    app_url=settings.app_base_url.rstrip("/"),
+                ).to_message(str(email))
+            )
+        except Exception:
+            logger.exception("welcome_email_failed", role=payload.role, provider="google")
     user_id = UUID(str(user["id"]))
     await store.touch_last_sign_in(user_id)
     roles = await store.user_roles(user_id)
@@ -480,22 +505,14 @@ async def password_reset(payload: PasswordResetRequest, request: Request) -> Mes
             token = mint_recovery_token(settings, UUID(str(user["id"])), user.get("email"))
             if payload.redirect_to:
                 separator = "&" if "?" in str(payload.redirect_to) else "?"
-                body = (
-                    "Reset your Urban Farming password using this link "
-                    "(valid for 30 minutes):\n\n"
-                    f"{payload.redirect_to}{separator}token={token}&type=recovery"
-                )
+                reset_url = f"{payload.redirect_to}{separator}token={token}&type=recovery"
             else:
-                body = (
-                    "Use this recovery token to reset your Urban Farming password "
-                    f"(valid for 30 minutes):\n\n{token}"
-                )
+                reset_url = str(token)
             await request.app.state.email.send(
-                MailMessage(
-                    to=str(user["email"]),
-                    subject="Reset your Urban Farming password",
-                    text=body,
-                )
+                password_reset_email(
+                    name=(user.get("raw_user_meta_data") or {}).get("full_name", "there"),
+                    reset_url=reset_url,
+                ).to_message(str(user["email"]))
             )
         return generic
     params = {"redirect_to": str(payload.redirect_to)} if payload.redirect_to else None
@@ -524,8 +541,27 @@ async def update_password(
         password_hash = await asyncio.to_thread(_hash_password, payload.password)
         await store.set_password(user_id, password_hash)
         await store.revoke_all_refresh_tokens(user_id)
+        user = await store.get_user_by_id(user_id)
+        try:
+            await request.app.state.email.send(
+                password_changed(
+                    name=((user or {}).get("raw_user_meta_data") or {}).get("full_name", "there"),
+                    app_url=settings.app_base_url.rstrip("/"),
+                ).to_message(str((user or {}).get("email") or claims.get("email") or ""))
+            )
+        except Exception:
+            logger.exception("password_changed_email_failed")
         return MessageResponse(message="Password updated")
-    await _gotrue(request, "PUT", "user", json={"password": payload.password}, token=token)
+    user = await _gotrue(request, "PUT", "user", json={"password": payload.password}, token=token)
+    try:
+        await request.app.state.email.send(
+            password_changed(
+                name=((user.get("user_metadata") or {}).get("full_name", "there")),
+                app_url=settings.app_base_url.rstrip("/"),
+            ).to_message(str(user.get("email") or ""))
+        )
+    except Exception:
+        logger.exception("password_changed_email_failed")
     return MessageResponse(message="Password updated")
 
 
