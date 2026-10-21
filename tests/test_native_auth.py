@@ -279,19 +279,21 @@ def test_native_refresh_rotation_and_logout() -> None:
 def test_native_password_reset_and_update() -> None:
     client, _store, email = _client_with_fakes()
     try:
-        client.post("/api/v1/auth/signup", json=SIGNUP)
+        signup = client.post("/api/v1/auth/signup", json=SIGNUP)
+        assert signup.status_code == 201
+        signup_email_count = len(email.sent)
 
         unknown = client.post("/api/v1/auth/password-reset", json={"email": "nobody@example.com"})
         assert unknown.status_code == 200
-        assert not email.sent
+        assert len(email.sent) == signup_email_count
 
         reset = client.post(
             "/api/v1/auth/password-reset",
             json={"email": SIGNUP["email"], "redirect_to": "https://app.example.com/reset"},
         )
         assert reset.status_code == 200
-        assert len(email.sent) == 1
-        assert "token=" in email.sent[0].text
+        assert len(email.sent) == signup_email_count + 1
+        assert "token=" in email.sent[-1].text
 
         login = client.post(
             "/api/v1/auth/login",
